@@ -9,7 +9,6 @@ et affiche un dashboard interactif filtrable par Date, Shift (A/B/C) et CC.
 Lancer avec :  streamlit run app.py
 """
 
-import glob
 import os
 import re
 
@@ -74,9 +73,24 @@ def _code_to_int(code) -> "int | None":
     return None
 
 
-def _first_matching_sheet(filepath: str, candidates: list) -> str | None:
+def _name_of(f) -> str:
+    """Nom du fichier, qu'il s'agisse d'un chemin (str) ou d'un fichier uploadé (UploadedFile)."""
+    return getattr(f, "name", None) or os.path.basename(str(f))
+
+
+def _reset(f):
+    """Remet le curseur au début pour un fichier uploadé (relecture possible)."""
+    if hasattr(f, "seek"):
+        try:
+            f.seek(0)
+        except Exception:
+            pass
+
+
+def _first_matching_sheet(filepath, candidates: list) -> str | None:
     """Retourne le 1er nom d'onglet existant parmi une liste de noms possibles."""
     try:
+        _reset(filepath)
         xls = pd.ExcelFile(filepath)
         for name in candidates:
             if name in xls.sheet_names:
@@ -86,13 +100,14 @@ def _first_matching_sheet(filepath: str, candidates: list) -> str | None:
     return None
 
 
-def read_raw_log_from_file(filepath: str) -> pd.DataFrame:
+def read_raw_log_from_file(filepath) -> pd.DataFrame:
     """Lit le journal d'événements (onglet 'DATA 1', accepte aussi 'RAW_LOG')."""
     sheet = _first_matching_sheet(filepath, ["DATA 1", "RAW_LOG"])
     if sheet is None:
-        st.warning(f"Aucun onglet journal (DATA 1 / RAW_LOG) trouvé dans {os.path.basename(filepath)}")
+        st.warning(f"Aucun onglet journal (DATA 1 / RAW_LOG) trouvé dans {_name_of(filepath)}")
         return pd.DataFrame()
 
+    _reset(filepath)
     df = pd.read_excel(filepath, sheet_name=sheet)
     df = _clean_columns(df)
 
@@ -120,17 +135,18 @@ def read_raw_log_from_file(filepath: str) -> pd.DataFrame:
         return "C"
 
     df["Shift"] = df["Start"].dt.hour.apply(_shift)
-    df["Fichier_Source"] = os.path.basename(filepath)
+    df["Fichier_Source"] = _name_of(filepath)
     return df
 
 
-def read_summary_from_file(filepath: str) -> pd.DataFrame:
+def read_summary_from_file(filepath) -> pd.DataFrame:
     """Lit le résumé quotidien (onglet 'DATA 2', accepte aussi 'SUMMARY')."""
     sheet = _first_matching_sheet(filepath, ["DATA 2", "SUMMARY"])
     if sheet is None:
-        st.warning(f"Aucun onglet résumé (DATA 2 / SUMMARY) trouvé dans {os.path.basename(filepath)}")
+        st.warning(f"Aucun onglet résumé (DATA 2 / SUMMARY) trouvé dans {_name_of(filepath)}")
         return pd.DataFrame()
 
+    _reset(filepath)
     df = pd.read_excel(filepath, sheet_name=sheet)
     df = _clean_columns(df)
     df = df.rename(columns={
@@ -154,11 +170,11 @@ def read_summary_from_file(filepath: str) -> pd.DataFrame:
 
     if "Date" in df.columns:
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
-    df["Fichier_Source"] = os.path.basename(filepath)
+    df["Fichier_Source"] = _name_of(filepath)
     return df
 
 
-def read_dt_legend_from_file(filepath: str) -> pd.DataFrame:
+def read_dt_legend_from_file(filepath) -> pd.DataFrame:
     """Lit la légende des codes d'arrêt (onglet 'DT', accepte aussi 'DT_LEGEND')."""
     sheet = _first_matching_sheet(filepath, ["DT", "DT_LEGEND"])
     if sheet is None:
@@ -166,8 +182,10 @@ def read_dt_legend_from_file(filepath: str) -> pd.DataFrame:
 
     # L'onglet "DT" du logiciel machine a son en-tête en ligne 4 (pas en ligne 1)
     try:
+        _reset(filepath)
         df = pd.read_excel(filepath, sheet_name=sheet, header=3)
         if not {"Downtime name", "Downtime reason"}.issubset({c.strip() if isinstance(c, str) else c for c in df.columns}):
+            _reset(filepath)
             df = pd.read_excel(filepath, sheet_name=sheet)  # sinon, en-tête normale en ligne 1
     except Exception:
         return pd.DataFrame(columns=["CodeDT", "CodeDT_num", "Libelle", "Categorie", "ColorHEX"])
@@ -206,10 +224,9 @@ def read_dt_legend_from_file(filepath: str) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(show_spinner=True)
-def load_all_data(folder: str):
-    files = sorted(glob.glob(os.path.join(folder, "*.xlsx")))
-    files = [f for f in files if not os.path.basename(f).startswith("~$")]
+def load_all_data(files: list):
+    """files : liste de chemins (mode dossier local) OU de fichiers uploadés (st.file_uploader)."""
+    files = [f for f in files if not _name_of(f).startswith("~$")]
 
     raw_logs, summaries, errors = [], [], []
     dt_legend = pd.DataFrame()
@@ -220,13 +237,13 @@ def load_all_data(folder: str):
             if not r.empty:
                 raw_logs.append(r)
         except Exception as e:
-            errors.append(f"{os.path.basename(f)} (journal) : {e}")
+            errors.append(f"{_name_of(f)} (journal) : {e}")
         try:
             s = read_summary_from_file(f)
             if not s.empty:
                 summaries.append(s)
         except Exception as e:
-            errors.append(f"{os.path.basename(f)} (résumé) : {e}")
+            errors.append(f"{_name_of(f)} (résumé) : {e}")
         if dt_legend.empty:
             dt_legend = read_dt_legend_from_file(f)
 
@@ -299,19 +316,18 @@ st.title("📊 Dashboard OEE — Département Production")
 
 with st.sidebar:
     st.header("⚙️ Source des données")
-    folder = st.text_input(
-        "Dossier des exports quotidiens",
-        value=r"C:\OEE\Exports_Quotidiens",
-        help="Dossier contenant vos fichiers Excel journaliers.",
+    uploaded_files = st.file_uploader(
+        "Déposez vos fichiers Excel journaliers (.xlsx)",
+        type=["xlsx"],
+        accept_multiple_files=True,
+        help="Onglets attendus dans chaque fichier : DATA 1/DATA 2/DT (ou SUMMARY/DT_LEGEND).",
     )
-    if st.button("🔄 Actualiser les données", use_container_width=True):
-        st.cache_data.clear()
 
-if not os.path.isdir(folder):
-    st.error(f"Le dossier indiqué n'existe pas : `{folder}`.")
+if not uploaded_files:
+    st.info("👈 Déposez un ou plusieurs fichiers Excel dans la barre latérale pour afficher le dashboard.")
     st.stop()
 
-raw_log, summary, dt_legend, files, errors = load_all_data(folder)
+raw_log, summary, dt_legend, files, errors = load_all_data(uploaded_files)
 
 if errors:
     with st.expander("⚠️ Fichiers non lus correctement"):
@@ -322,7 +338,7 @@ if raw_log.empty and summary.empty:
     st.warning("Aucune donnée exploitable trouvée dans ce dossier pour le moment.")
     st.stop()
 
-st.caption(f"📁 {len(files)} fichier(s) chargé(s) depuis `{folder}`.")
+st.caption(f"📁 {len(files)} fichier(s) chargé(s) : " + ", ".join(_name_of(f) for f in files))
 
 # ---- Filtres ----
 with st.sidebar:
