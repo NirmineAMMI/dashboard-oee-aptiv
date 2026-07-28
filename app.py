@@ -9,6 +9,7 @@ et affiche un dashboard interactif filtrable par Date, Shift (A/B/C) et CC.
 Lancer avec :  streamlit run app.py
 """
 
+import glob
 import os
 import re
 
@@ -224,6 +225,7 @@ def read_dt_legend_from_file(filepath) -> pd.DataFrame:
     return df
 
 
+@st.cache_data(show_spinner=True)
 def load_all_data(files: list):
     """files : liste de chemins (mode dossier local) OU de fichiers uploadés (st.file_uploader)."""
     files = [f for f in files if not _name_of(f).startswith("~$")]
@@ -309,25 +311,88 @@ def gauge(value, title, color):
     return fig
 
 
+DATA_DIR = "data"
+os.makedirs(DATA_DIR, exist_ok=True)
+
+
+def _get_admins() -> dict:
+    """Récupère les comptes admin (nom -> mot de passe) depuis les secrets Streamlit."""
+    try:
+        return dict(st.secrets["admins"])
+    except Exception:
+        return {}
+
+
+def _list_stored_files() -> list:
+    files = sorted(glob.glob(os.path.join(DATA_DIR, "*.xlsx")))
+    return [f for f in files if not os.path.basename(f).startswith("~$")]
+
+
 # ----------------------------------------------------------------------------
 # Interface
 # ----------------------------------------------------------------------------
 st.title("📊 Dashboard OEE — Département Production")
 
-with st.sidebar:
-    st.header("⚙️ Source des données")
-    uploaded_files = st.file_uploader(
-        "Déposez vos fichiers Excel journaliers (.xlsx)",
-        type=["xlsx"],
-        accept_multiple_files=True,
-        help="Onglets attendus dans chaque fichier : DATA 1/DATA 2/DT (ou SUMMARY/DT_LEGEND).",
-    )
+if "is_admin" not in st.session_state:
+    st.session_state.is_admin = False
+    st.session_state.admin_user = None
 
-if not uploaded_files:
-    st.info("👈 Déposez un ou plusieurs fichiers Excel dans la barre latérale pour afficher le dashboard.")
+with st.sidebar:
+    st.header("🔐 Espace administrateur")
+
+    if not st.session_state.is_admin:
+        with st.form("login_form"):
+            username = st.text_input("Nom d'utilisateur")
+            password = st.text_input("Mot de passe", type="password")
+            submitted = st.form_submit_button("Se connecter")
+        if submitted:
+            admins = _get_admins()
+            if username in admins and password == admins[username]:
+                st.session_state.is_admin = True
+                st.session_state.admin_user = username
+                st.rerun()
+            else:
+                st.error("Identifiants incorrects.")
+    else:
+        st.success(f"Connecté : {st.session_state.admin_user}")
+        if st.button("Se déconnecter"):
+            st.session_state.is_admin = False
+            st.session_state.admin_user = None
+            st.rerun()
+
+        st.divider()
+        st.subheader("📤 Ajouter des fichiers")
+        new_files = st.file_uploader(
+            "Fichiers Excel journaliers (.xlsx)",
+            type=["xlsx"], accept_multiple_files=True, key="admin_uploader",
+        )
+        if new_files and st.button("Enregistrer dans le stock", use_container_width=True):
+            for f in new_files:
+                with open(os.path.join(DATA_DIR, f.name), "wb") as out:
+                    out.write(f.getbuffer())
+            st.cache_data.clear()
+            st.success(f"{len(new_files)} fichier(s) ajouté(s).")
+            st.rerun()
+
+        st.divider()
+        st.subheader("🗑️ Fichiers stockés")
+        stored = [os.path.basename(f) for f in _list_stored_files()]
+        if stored:
+            to_delete = st.selectbox("Supprimer un fichier", ["-"] + stored)
+            if to_delete != "-" and st.button(f"Confirmer la suppression"):
+                os.remove(os.path.join(DATA_DIR, to_delete))
+                st.cache_data.clear()
+                st.rerun()
+        else:
+            st.caption("Aucun fichier stocké pour le moment.")
+
+files_on_disk = _list_stored_files()
+
+if not files_on_disk:
+    st.info("Aucune donnée disponible pour le moment. Un administrateur doit se connecter pour ajouter des fichiers.")
     st.stop()
 
-raw_log, summary, dt_legend, files, errors = load_all_data(uploaded_files)
+raw_log, summary, dt_legend, files, errors = load_all_data(files_on_disk)
 
 if errors:
     with st.expander("⚠️ Fichiers non lus correctement"):
@@ -335,7 +400,7 @@ if errors:
             st.write("-", e)
 
 if raw_log.empty and summary.empty:
-    st.warning("Aucune donnée exploitable trouvée dans ce dossier pour le moment.")
+    st.warning("Aucune donnée exploitable trouvée pour le moment.")
     st.stop()
 
 st.caption(f"📁 {len(files)} fichier(s) chargé(s) : " + ", ".join(_name_of(f) for f in files))
