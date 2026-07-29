@@ -630,7 +630,7 @@ if not summary_f.empty and "Average cycle (s)" in summary_f.columns:
         fig = px.bar(
             cyc_over, x="Dépassement (s)", y="Machine", orientation="h",
             color_discrete_sequence=[RED],
-            custom_data=["Article name", "Target cycle (s)", "Tolerance cycle (s)", "Average cycle (s)"],
+            custom_data=["Article name", "Target cycle (s)", "Tolerance cycle (s)", "Average cycle (s)", "Dépassement (s)"],
         )
         fig.update_traces(
             hovertemplate=(
@@ -643,7 +643,30 @@ if not summary_f.empty and "Average cycle (s)" in summary_f.columns:
         )
         fig.update_layout(height=max(220, 26 * len(cyc_over)), margin=dict(t=10),
                            xaxis_title="Dépassement au-delà de la tolérance (s)", yaxis_title="")
-        st.plotly_chart(fig, use_container_width=True)
+
+        cyc_chart_col, cyc_detail_col = st.columns([2, 1])
+        with cyc_chart_col:
+            event_cyc = st.plotly_chart(
+                fig, use_container_width=True,
+                on_select="rerun", selection_mode="points", key="cycle_time_chart",
+            )
+        with cyc_detail_col:
+            points_cyc = (event_cyc or {}).get("selection", {}).get("points", [])
+            if points_cyc:
+                p = points_cyc[0]
+                machine_sel_cyc = p.get("y")
+                row_sel = cyc_over[cyc_over["Machine"] == machine_sel_cyc]
+                if not row_sel.empty:
+                    row_sel = row_sel.iloc[0]
+                    st.markdown(f"**Machine `{machine_sel_cyc}`**")
+                    st.write(f"Article : {row_sel.get('Article name', 'N/A')}")
+                    st.write(f"Cible : {row_sel['Target cycle (s)']:.2f} s ± {row_sel['Tolerance cycle (s)']:.2f} s")
+                    st.write(f"Moyenne mesurée : {row_sel['Average cycle (s)']:.2f} s")
+                    st.write(f"Dépassement : +{row_sel['Dépassement (s)']:.2f} s")
+                else:
+                    st.caption("Aucun détail trouvé pour cette sélection.")
+            else:
+                st.caption("👆 Clique sur une barre pour voir le détail ici.")
     else:
         st.info("Aucune machine ne dépasse son intervalle de cycle time cible pour la sélection actuelle.")
 else:
