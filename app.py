@@ -443,10 +443,45 @@ def _list_stored_files() -> list:
 # ----------------------------------------------------------------------------
 st.title("📊 Dashboard OEE — Département Production")
 
+with st.sidebar:
+    st.header("📁 Gestion des fichiers")
+    else:
+        st.success(f"Connecté : {st.session_state.admin_user}")
+        if st.button("Se déconnecter"):
+            st.session_state.is_admin = False
+            st.session_state.admin_user = None
+            st.rerun()
+
+        st.divider()
+        st.subheader("📤 Ajouter des fichiers")
+        new_files = st.file_uploader(
+            "Fichiers Excel journaliers (.xlsx)",
+            type=["xlsx"], accept_multiple_files=True, key="admin_uploader",
+        )
+        if new_files and st.button("Enregistrer dans le stock", use_container_width=True):
+            for f in new_files:
+                with open(os.path.join(DATA_DIR, f.name), "wb") as out:
+                    out.write(f.getbuffer())
+            st.cache_data.clear()
+            st.success(f"{len(new_files)} fichier(s) ajouté(s).")
+            st.rerun()
+
+        st.divider()
+        st.subheader("🗑️ Fichiers stockés")
+        stored = [os.path.basename(f) for f in _list_stored_files()]
+        if stored:
+            to_delete = st.selectbox("Supprimer un fichier", ["-"] + stored)
+            if to_delete != "-" and st.button(f"Confirmer la suppression"):
+                os.remove(os.path.join(DATA_DIR, to_delete))
+                st.cache_data.clear()
+                st.rerun()
+        else:
+            st.caption("Aucun fichier stocké pour le moment.")
+
 files_on_disk = _list_stored_files()
 
 if not files_on_disk:
-    st.info("Aucune donnée disponible pour le moment.")
+    st.info("Aucune donnée disponible pour le moment. Un administrateur doit se connecter pour ajouter des fichiers.")
     st.stop()
 
 raw_log, summary, dt_legend, files, errors = load_all_data(files_on_disk)
