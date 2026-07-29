@@ -401,7 +401,7 @@ def half_donut_gauge(value_pct, title, color):
     remainder = 100 - v
     fig = go.Figure(go.Pie(
         values=[v, remainder, 100],
-        rotation=90,
+        rotation=270,
         hole=0.65,
         direction="clockwise",
         sort=False,
@@ -562,53 +562,51 @@ st.divider()
 # ----------------------------------------------------------------------------
 # Rangée 2 : Availability par downtime code (demi-cercles)
 # ----------------------------------------------------------------------------
-st.subheader("Availability par downtime code")
+st.subheader("Availability par catégorie de downtime code")
 st.caption(
     "Chaque demi-cercle montre le poids (en % du dénominateur d'Availability) "
-    "d'un code d'arrêt dans la sélection filtrée actuelle."
+    "d'une catégorie de code d'arrêt (Prod/Mnt/MG/TR/MPC/Qlt/ME/HR...) dans la "
+    "sélection filtrée actuelle — même regroupement et mêmes couleurs que le "
+    "donut « Répartition par code d'arrêt (catégorie) » ci-dessous."
 )
 
 denom_dispo = kpis["Temps de Fonctionnement (h)"] + kpis["Temps Arret Confesse (h)"]
 
-if not raw_log_f.empty and denom_dispo > 0:
-    df_codes = (
-        raw_log_f[raw_log_f["Downtime reason"] != 0]
-        .groupby("Downtime reason")
-        .agg(**{
-            "confessed [h]": ("confessed [h]", "sum"),
-            "Downtime name": ("Downtime name", "first"),
-        })
+if not raw_log_f.empty and denom_dispo > 0 and not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
+    raw_with_cat_avail = raw_log_f.merge(
+        dt_legend[["CodeDT_num", "Categorie", "ColorHEX"]],
+        left_on="Downtime reason", right_on="CodeDT_num", how="left",
+    )
+    df_cat_avail = (
+        raw_with_cat_avail[raw_with_cat_avail["Downtime reason"] != 0]
+        .groupby("Categorie", dropna=False)["confessed [h]"].sum()
         .reset_index()
     )
+    df_cat_avail["Categorie"] = df_cat_avail["Categorie"].fillna("Non catégorisé")
 
-    if not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
-        df_codes = df_codes.merge(
-            dt_legend[["CodeDT_num", "Libelle", "ColorHEX"]],
-            left_on="Downtime reason", right_on="CodeDT_num", how="left",
-        )
-        df_codes["Label"] = df_codes["Libelle"].fillna(df_codes["Downtime name"])
-        df_codes["Color"] = df_codes["ColorHEX"].fillna("#9E9E9E")
-    else:
-        df_codes["Label"] = df_codes["Downtime name"]
-        df_codes["Color"] = "#9E9E9E"
+    cat_color_map_avail = (
+        raw_with_cat_avail.dropna(subset=["Categorie"])
+        .drop_duplicates(subset=["Categorie"])
+        .set_index("Categorie")["ColorHEX"].to_dict()
+    )
+    df_cat_avail["Color"] = df_cat_avail["Categorie"].map(cat_color_map_avail).fillna("#9E9E9E")
+    df_cat_avail["Pct"] = df_cat_avail["confessed [h]"] / denom_dispo * 100
+    df_cat_avail = df_cat_avail.sort_values("Pct", ascending=False)
 
-    df_codes["Pct"] = df_codes["confessed [h]"] / denom_dispo * 100
-    df_codes = df_codes.sort_values("Pct", ascending=False)
-
-    if not df_codes.empty:
+    if not df_cat_avail.empty and df_cat_avail["Pct"].sum() > 0:
         n_par_ligne = 6
-        rows_codes = [df_codes.iloc[i:i + n_par_ligne] for i in range(0, len(df_codes), n_par_ligne)]
+        rows_codes = [df_cat_avail.iloc[i:i + n_par_ligne] for i in range(0, len(df_cat_avail), n_par_ligne)]
         for chunk in rows_codes:
             cols = st.columns(len(chunk))
             for col, (_, row) in zip(cols, chunk.iterrows()):
                 col.plotly_chart(
-                    half_donut_gauge(row["Pct"], row["Label"], row["Color"]),
+                    half_donut_gauge(row["Pct"], row["Categorie"], row["Color"]),
                     use_container_width=True,
                 )
     else:
         st.info("Aucun arrêt enregistré pour la sélection actuelle.")
 else:
-    st.info("Pas assez de données pour ce graphique.")
+    st.info("Pas assez de données (ou légende DT_LEGEND indisponible) pour ce graphique.")
 
 st.divider()
 
