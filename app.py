@@ -1,10 +1,18 @@
 """
-Dashboard OEE - Aptiv (version design amélioré)
-=================================================
+Dashboard OEE - Aptiv (version design amélioré + nouvelles analyses)
+=====================================================================
 Lit automatiquement tous les fichiers Excel journaliers déposés dans un dossier
 (chacun avec les onglets "DATA 1"/"DATA 2"/"DT" -- OU "SUMMARY"/"DT_LEGEND",
 les deux noms sont acceptés), calcule Availability, Performance, Quality et OEE,
 et affiche un dashboard interactif filtrable par Date, Shift (A/B/C) et CC.
+
+Nouveautés de cette version :
+  1. Classement des machines / CC par KPI (Availability, Performance, Quality, OEE)
+  2. Pareto des causes d'arrêt (barres + courbe cumulée)
+  3. Fréquence vs Durée des arrêts (bulles) -> distingue micro-arrêts chroniques
+     et pannes rares mais longues
+  4. Tendance des KPI dans le temps (si plusieurs dates sélectionnées)
+  5. Timeline (Gantt) des arrêts par machine
 
 Lancer avec :  streamlit run app.py
 """
@@ -368,8 +376,39 @@ def compute_kpis(raw_log: pd.DataFrame, summary: pd.DataFrame) -> dict:
     }
 
 
+def compute_kpis_by_group(raw_log: pd.DataFrame, summary: pd.DataFrame, group_col: str) -> pd.DataFrame:
+    """Calcule Availability / Performance / Quality / OEE pour chaque valeur de
+    group_col ('Machine' ou 'CC'). Nécessite que summary contienne group_col
+    (directement, ou via 'Machine' -> mapping CC déjà fait en amont pour raw_log)."""
+    rows = []
+    groups = set()
+    if not raw_log.empty and group_col in raw_log.columns:
+        groups |= set(raw_log[group_col].dropna().unique())
+    if not summary.empty and group_col in summary.columns:
+        groups |= set(summary[group_col].dropna().unique())
+
+    for g in sorted(groups, key=str):
+        r_sub = raw_log[raw_log[group_col] == g] if (not raw_log.empty and group_col in raw_log.columns) else pd.DataFrame()
+        s_sub = summary[summary[group_col] == g] if (not summary.empty and group_col in summary.columns) else pd.DataFrame()
+        k = compute_kpis(r_sub, s_sub)
+        rows.append({group_col: g, **k})
+    return pd.DataFrame(rows)
+
+
 def fmt_pct(x):
     return f"{x * 100:.1f} %" if x is not None else "N/A"
+
+
+def kpi_color(value_0_1):
+    """Couleur seuil (rouge / orange / vert) pour une valeur 0-1, cohérente avec les jauges."""
+    if value_0_1 is None:
+        return "#9E9E9E"
+    v = value_0_1 * 100
+    if v < 60:
+        return RED
+    if v < 85:
+        return ORANGE
+    return GREEN
 
 
 def gauge(value, title, color):
@@ -544,7 +583,36 @@ if raw_log_f.empty and summary_f.empty:
     st.warning("Aucune donnée ne correspond aux filtres sélectionnés.")
     st.stop()
 
+# Table de correspondance Machine -> CC (pour pouvoir grouper raw_log_f par CC)
+machine_to_cc = {}
+if not summary_f.empty and "CC" in summary_f.columns:
+    machine_to_cc = (
+        summary_f.dropna(subset=["Machine"])
+        .drop_duplicates(subset=["Machine"])
+        .set_index("Machine")["CC"].to_dict()
+    )
+if not raw_log_f.empty:
+    raw_log_f["CC"] = raw_log_f["Machine"].map(machine_to_cc).fillna("N/A")
+
 kpis = compute_kpis(raw_log_f, summary_f)
+
+# Fusion unique raw_log_f <-> dt_legend, réutilisée par toutes les sections "arrêts"
+if not raw_log_f.empty and not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
+    raw_cat_f = raw_log_f.merge(
+        dt_legend[["CodeDT_num", "Libelle", "Categorie", "ColorHEX"]],
+        left_on="Downtime reason", right_on="CodeDT_num", how="left",
+    )
+    raw_cat_f["Categorie"] = raw_cat_f["Categorie"].fillna("Non catégorisé")
+    raw_cat_f["Libelle"] = raw_cat_f["Libelle"].fillna(raw_cat_f["Downtime name"])
+    raw_cat_f["ColorHEX"] = raw_cat_f["ColorHEX"].fillna("#9E9E9E")
+else:
+    raw_cat_f = pd.DataFrame()
+
+cat_color_map = (
+    raw_cat_f.dropna(subset=["Categorie"]).drop_duplicates(subset=["Categorie"])
+    .set_index("Categorie")["ColorHEX"].to_dict()
+    if not raw_cat_f.empty else {}
+)
 
 # ----------------------------------------------------------------------------
 # Rangée 1 : jauges des 4 KPI
@@ -558,30 +626,59 @@ g4.plotly_chart(gauge(kpis["OEE"], "OEE", ORANGE), use_container_width=True)
 st.divider()
 
 # ----------------------------------------------------------------------------
+# NOUVEAU — Classement par Machine / CC
+# ----------------------------------------------------------------------------
+st.subheader("🏆 Classement par Machine / CC")
+st.caption("Identifie en un coup d'œil les machines ou cellules qui tirent le KPI vers le bas.")
+
+rank_c1, rank_c2 = st.columns([1, 1])
+group_choice = rank_c1.radio("Grouper par", ["Machine", "CC"], horizontal=True, key="rank_group")
+metric_choice = rank_c2.radio(
+    "KPI", ["OEE", "Availability", "Performance", "Quality"], horizontal=True, key="rank_metric",
+)
+
+raw_for_rank = raw_log_f.copy() if not raw_log_f.empty else pd.DataFrame()
+df_rank = compute_kpis_by_group(raw_for_rank, summary_f, group_choice)
+
+if not df_rank.empty and df_rank[metric_choice].notna().any():
+    df_rank_plot = df_rank.dropna(subset=[metric_choice]).copy()
+    df_rank_plot["Valeur (%)"] = df_rank_plot[metric_choice] * 100
+    df_rank_plot["Couleur"] = df_rank_plot[metric_choice].apply(kpi_color)
+    df_rank_plot = df_rank_plot.sort_values("Valeur (%)", ascending=True)
+
+    fig_rank = go.Figure(go.Bar(
+        x=df_rank_plot["Valeur (%)"], y=df_rank_plot[group_choice], orientation="h",
+        marker=dict(color=df_rank_plot["Couleur"]),
+        text=[f"{v:.1f}%" for v in df_rank_plot["Valeur (%)"]],
+        textposition="outside",
+    ))
+    fig_rank.add_vline(x=85, line_dash="dot", line_color=GREEN, annotation_text="Objectif 85%")
+    fig_rank.update_layout(
+        height=max(260, 26 * len(df_rank_plot)),
+        margin=dict(t=10, l=10, r=40),
+        xaxis_title=f"{metric_choice} (%)", yaxis_title="",
+        xaxis_range=[0, max(105, df_rank_plot["Valeur (%)"].max() + 10)],
+    )
+    st.plotly_chart(fig_rank, use_container_width=True)
+else:
+    st.info("Pas assez de données pour établir ce classement avec les filtres actuels.")
+
+st.divider()
+
+# ----------------------------------------------------------------------------
 # Rangée 2 : Availability par downtime code (demi-cercles)
 # ----------------------------------------------------------------------------
 st.subheader("Availability par catégorie de downtime code")
 
 denom_dispo = kpis["Temps de Fonctionnement (h)"] + kpis["Temps Arret Confesse (h)"]
 
-if not raw_log_f.empty and denom_dispo > 0 and not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
-    raw_with_cat_avail = raw_log_f.merge(
-        dt_legend[["CodeDT_num", "Categorie", "ColorHEX"]],
-        left_on="Downtime reason", right_on="CodeDT_num", how="left",
-    )
+if not raw_cat_f.empty and denom_dispo > 0:
     df_cat_avail = (
-        raw_with_cat_avail[raw_with_cat_avail["Downtime reason"] != 0]
+        raw_cat_f[raw_cat_f["Downtime reason"] != 0]
         .groupby("Categorie", dropna=False)["confessed [h]"].sum()
         .reset_index()
     )
-    df_cat_avail["Categorie"] = df_cat_avail["Categorie"].fillna("Non catégorisé")
-
-    cat_color_map_avail = (
-        raw_with_cat_avail.dropna(subset=["Categorie"])
-        .drop_duplicates(subset=["Categorie"])
-        .set_index("Categorie")["ColorHEX"].to_dict()
-    )
-    df_cat_avail["Color"] = df_cat_avail["Categorie"].map(cat_color_map_avail).fillna("#9E9E9E")
+    df_cat_avail["Color"] = df_cat_avail["Categorie"].map(cat_color_map).fillna("#9E9E9E")
     df_cat_avail["Pct"] = df_cat_avail["confessed [h]"] / denom_dispo * 100
     df_cat_avail = df_cat_avail.sort_values("Pct", ascending=False)
 
@@ -662,31 +759,59 @@ else:
 st.divider()
 
 # ----------------------------------------------------------------------------
+# NOUVEAU — Tendance des KPI dans le temps (si plusieurs dates sélectionnées)
+# ----------------------------------------------------------------------------
+if len(selected_dates) > 1:
+    st.subheader("📈 Tendance des KPI dans le temps")
+    trend_rows = []
+    for d in sorted(selected_dates):
+        r_d = raw_log_f[raw_log_f["Date"] == d] if not raw_log_f.empty else pd.DataFrame()
+        s_d = summary_f[summary_f["Date"] == d] if not summary_f.empty else pd.DataFrame()
+        if r_d.empty and s_d.empty:
+            continue
+        k_d = compute_kpis(r_d, s_d)
+        trend_rows.append({"Date": d, **{k: v for k, v in k_d.items() if k in
+                                          ("Availability", "Performance", "Quality", "OEE")}})
+    df_trend = pd.DataFrame(trend_rows)
+
+    if not df_trend.empty:
+        df_trend_pct = df_trend.copy()
+        for col in ["Availability", "Performance", "Quality", "OEE"]:
+            df_trend_pct[col] = df_trend_pct[col] * 100
+
+        fig_trend = go.Figure()
+        for col, color in [("Availability", APTIV_BLUE), ("Performance", APTIV_LIGHT),
+                            ("Quality", GREEN), ("OEE", ORANGE)]:
+            fig_trend.add_trace(go.Scatter(
+                x=df_trend_pct["Date"], y=df_trend_pct[col], mode="lines+markers",
+                name=col, line=dict(color=color, width=2),
+            ))
+        fig_trend.add_hline(y=85, line_dash="dot", line_color="gray", annotation_text="Objectif 85%")
+        fig_trend.update_layout(
+            height=320, margin=dict(t=20), yaxis_title="%", xaxis_title="",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+        st.plotly_chart(fig_trend, use_container_width=True)
+    else:
+        st.info("Pas assez de données pour tracer une tendance.")
+
+    st.divider()
+
+# ----------------------------------------------------------------------------
 # Rangée 3 : répartition des arrêts (donut par cause) + top causes (barres)
 # ----------------------------------------------------------------------------
 st.subheader("📉 Analyse des temps d'arrêt")
 
-# --- Nouveau donut : répartition par CODE d'arrêt (catégorie : Prod/Mnt/MG/TR/MPC/Qlt/ME/HR...) ---
+# --- Donut : répartition par CODE d'arrêt (catégorie : Prod/Mnt/MG/TR/MPC/Qlt/ME/HR...) ---
 st.markdown("**Répartition par code d'arrêt (catégorie)**")
-if not raw_log_f.empty and not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
-    raw_with_cat = raw_log_f.merge(
-        dt_legend[["CodeDT_num", "Categorie", "ColorHEX"]],
-        left_on="Downtime reason", right_on="CodeDT_num", how="left",
-    )
+if not raw_cat_f.empty:
     df_cat = (
-        raw_with_cat[raw_with_cat["Downtime reason"] != 0]
+        raw_cat_f[raw_cat_f["Downtime reason"] != 0]
         .groupby("Categorie", dropna=False)["confessed [h]"].sum()
         .reset_index()
         .sort_values("confessed [h]", ascending=False)
     )
-    df_cat["Categorie"] = df_cat["Categorie"].fillna("Non catégorisé")
     if not df_cat.empty and df_cat["confessed [h]"].sum() > 0:
-        # une couleur représentative par catégorie (même couleur pour tous les codes d'une catégorie)
-        cat_color_map = (
-            raw_with_cat.dropna(subset=["Categorie"])
-            .drop_duplicates(subset=["Categorie"])
-            .set_index("Categorie")["ColorHEX"].to_dict()
-        )
         colors = [cat_color_map.get(c, "#9E9E9E") for c in df_cat["Categorie"]]
         fig_cat = go.Figure(go.Pie(
             labels=df_cat["Categorie"], values=df_cat["confessed [h]"], hole=0.45,
@@ -708,36 +833,23 @@ col_pie, col_bar = st.columns(2)
 #   "Downtime name" contient le TEXTE de la cause.
 # - Dans "DT_LEGEND", c'est l'inverse : "CodeDT" (colonne "Downtime name" du fichier)
 #   contient le code, et "Libelle" (colonne "Downtime reason" du fichier) contient le texte.
-# On fusionne donc désormais sur le CODE numérique normalisé (CodeDT_num vs Downtime reason),
+# On fusionne donc sur le CODE numérique normalisé (CodeDT_num vs Downtime reason),
 # et non plus sur le texte, pour que ColorHEX se rattache correctement à chaque cause.
 
 with col_pie:
     st.markdown("**Répartition par cause**")
-    if not raw_log_f.empty:
+    if not raw_cat_f.empty:
         df_dt = (
-            raw_log_f[raw_log_f["Downtime reason"] != 0]
-            .groupby("Downtime reason")
-            .agg(**{
-                "confessed [h]": ("confessed [h]", "sum"),
-                "Downtime name": ("Downtime name", "first"),
-            })
+            raw_cat_f[raw_cat_f["Downtime reason"] != 0]
+            .groupby("Libelle")
+            .agg(**{"confessed [h]": ("confessed [h]", "sum"), "ColorHEX": ("ColorHEX", "first")})
             .reset_index()
             .sort_values("confessed [h]", ascending=False)
         )
         if not df_dt.empty and df_dt["confessed [h]"].sum() > 0:
-            if not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
-                df_dt = df_dt.merge(
-                    dt_legend[["CodeDT_num", "Libelle", "ColorHEX"]],
-                    left_on="Downtime reason", right_on="CodeDT_num", how="left",
-                )
-                df_dt["Label"] = df_dt["Libelle"].fillna(df_dt["Downtime name"])
-                colors = ["#9E9E9E" if pd.isna(c) else c for c in df_dt["ColorHEX"]]
-            else:
-                df_dt["Label"] = df_dt["Downtime name"]
-                colors = None
             fig = go.Figure(go.Pie(
-                labels=df_dt["Label"], values=df_dt["confessed [h]"], hole=0.45,
-                marker=dict(colors=colors) if colors else {},
+                labels=df_dt["Libelle"], values=df_dt["confessed [h]"], hole=0.45,
+                marker=dict(colors=df_dt["ColorHEX"]),
                 textinfo="percent", hovertemplate="<b>%{label}</b><br>%{value:.2f} h<extra></extra>",
             ))
             fig.update_layout(height=280, margin=dict(t=10, b=10),
@@ -749,65 +861,92 @@ with col_pie:
         st.info("Pas de données disponibles.")
 
 with col_bar:
-    st.markdown("**Top 10 des causes (heures)**")
-    if not raw_log_f.empty:
-        df_c = (
-            raw_log_f[raw_log_f["Downtime reason"] != 0]
-            .groupby("Downtime reason")
-            .agg(**{
-                "confessed [h]": ("confessed [h]", "sum"),
-                "Downtime name": ("Downtime name", "first"),
-            })
+    st.markdown("**Pareto des causes d'arrêt (Top 12)**")
+    if not raw_cat_f.empty:
+        df_p = (
+            raw_cat_f[raw_cat_f["Downtime reason"] != 0]
+            .groupby("Libelle")
+            .agg(**{"confessed [h]": ("confessed [h]", "sum"), "ColorHEX": ("ColorHEX", "first")})
             .reset_index()
-            .sort_values("confessed [h]", ascending=True)
-            .tail(10)
+            .sort_values("confessed [h]", ascending=False)
+            .head(12)
         )
-        if not df_c.empty and df_c["confessed [h]"].sum() > 0:
-            if not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
-                df_c = df_c.merge(
-                    dt_legend[["CodeDT_num", "Libelle", "ColorHEX"]],
-                    left_on="Downtime reason", right_on="CodeDT_num", how="left",
-                )
-                df_c["Label"] = df_c["Libelle"].fillna(df_c["Downtime name"])
-                colors_map = {row["Label"]: (row["ColorHEX"] if pd.notna(row["ColorHEX"]) else "#9E9E9E")
-                              for _, row in df_c.iterrows()}
-            else:
-                df_c["Label"] = df_c["Downtime name"]
-                colors_map = None
-            fig = px.bar(
-                df_c, x="confessed [h]", y="Label", orientation="h",
-                color="Label" if colors_map else None,
-                color_discrete_map=colors_map if colors_map else None,
-                color_discrete_sequence=[RED] if not colors_map else None,
+        if not df_p.empty and df_p["confessed [h]"].sum() > 0:
+            df_p["Cumul (%)"] = df_p["confessed [h]"].cumsum() / df_p["confessed [h]"].sum() * 100
+            fig_p = go.Figure()
+            fig_p.add_trace(go.Bar(
+                x=df_p["Libelle"], y=df_p["confessed [h]"], name="Heures d'arrêt",
+                marker=dict(color=df_p["ColorHEX"]),
+                yaxis="y1", text=[f"{v:.2f}h" for v in df_p["confessed [h]"]], textposition="outside",
+            ))
+            fig_p.add_trace(go.Scatter(
+                x=df_p["Libelle"], y=df_p["Cumul (%)"], name="% cumulé",
+                yaxis="y2", mode="lines+markers", line=dict(color=RED, width=2),
+            ))
+            fig_p.update_layout(
+                height=280, margin=dict(t=10, b=10),
+                yaxis=dict(title="Heures d'arrêt"),
+                yaxis2=dict(title="% cumulé", overlaying="y", side="right", range=[0, 105]),
+                xaxis=dict(tickangle=-30, tickfont=dict(size=9)),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=9)),
             )
-            fig.update_layout(height=280, margin=dict(t=10, b=10), showlegend=False,
-                              xaxis_title="Heures d'arrêt", yaxis_title="")
-            fig.update_traces(texttemplate="%{x:.2f} h", textposition="outside")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig_p, use_container_width=True)
         else:
             st.info("Aucun arrêt enregistré pour la sélection actuelle.")
     else:
         st.info("Pas de données disponibles.")
 
-st.subheader("Code d'arrêt (catégorie) par machine")
-if not raw_log_f.empty and not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
-    raw_with_cat_m = raw_log_f.merge(
-        dt_legend[["CodeDT_num", "Categorie", "ColorHEX"]],
-        left_on="Downtime reason", right_on="CodeDT_num", how="left",
-    )
-    raw_with_cat_m["Categorie"] = raw_with_cat_m["Categorie"].fillna("Non catégorisé")
-    only_dt = raw_with_cat_m[raw_with_cat_m["Downtime reason"] != 0]
+st.divider()
 
-    df_mc = (
-        only_dt.groupby(["Machine", "Categorie"])["confessed [h]"].sum()
+# ----------------------------------------------------------------------------
+# NOUVEAU — Fréquence vs Durée des arrêts (bulles)
+# ----------------------------------------------------------------------------
+st.subheader("🔴 Fréquence vs Durée des arrêts")
+st.caption(
+    "Distingue les micro-arrêts très fréquents (souvent négligés) des pannes rares "
+    "mais longues. Une bulle en haut à droite = cause prioritaire (fréquente ET longue)."
+)
+if not raw_cat_f.empty:
+    df_freq = (
+        raw_cat_f[raw_cat_f["Downtime reason"] != 0]
+        .groupby("Libelle")
+        .agg(
+            Occurrences=("confessed [h]", "count"),
+            **{"Total (h)": ("confessed [h]", "sum")},
+            **{"Categorie": ("Categorie", "first")},
+            **{"ColorHEX": ("ColorHEX", "first")},
+        )
         .reset_index()
     )
-    if not df_mc.empty and df_mc["confessed [h]"].sum() > 0:
-        cat_color_map_m = (
-            raw_with_cat_m.dropna(subset=["Categorie"])
-            .drop_duplicates(subset=["Categorie"])
-            .set_index("Categorie")["ColorHEX"].to_dict()
+    if not df_freq.empty:
+        df_freq["Durée moyenne (min)"] = (df_freq["Total (h)"] / df_freq["Occurrences"]) * 60
+        fig_freq = px.scatter(
+            df_freq, x="Occurrences", y="Durée moyenne (min)", size="Total (h)",
+            color="Categorie", color_discrete_map=cat_color_map,
+            hover_name="Libelle", size_max=45,
+            custom_data=["Libelle", "Total (h)"],
         )
+        fig_freq.update_traces(
+            hovertemplate="<b>%{customdata[0]}</b><br>Occurrences : %{x}<br>"
+                          "Durée moyenne : %{y:.1f} min<br>Total : %{customdata[1]:.2f} h<extra></extra>",
+        )
+        fig_freq.update_layout(height=380, margin=dict(t=10))
+        st.plotly_chart(fig_freq, use_container_width=True)
+    else:
+        st.info("Aucun arrêt enregistré pour la sélection actuelle.")
+else:
+    st.info("Pas assez de données (ou légende DT_LEGEND indisponible) pour ce graphique.")
+
+st.divider()
+
+# ----------------------------------------------------------------------------
+# Code d'arrêt (catégorie) par machine
+# ----------------------------------------------------------------------------
+st.subheader("Code d'arrêt (catégorie) par machine")
+if not raw_cat_f.empty:
+    only_dt = raw_cat_f[raw_cat_f["Downtime reason"] != 0]
+    df_mc = only_dt.groupby(["Machine", "Categorie"])["confessed [h]"].sum().reset_index()
+    if not df_mc.empty and df_mc["confessed [h]"].sum() > 0:
         machine_order = (
             df_mc.groupby("Machine")["confessed [h]"].sum()
             .sort_values(ascending=False).index.tolist()
@@ -815,7 +954,7 @@ if not raw_log_f.empty and not dt_legend.empty and "CodeDT_num" in dt_legend.col
         fig_m = px.bar(
             df_mc, x="Machine", y="confessed [h]", color="Categorie",
             category_orders={"Machine": machine_order},
-            color_discrete_map=cat_color_map_m,
+            color_discrete_map=cat_color_map,
             custom_data=["Categorie"],
         )
         fig_m.update_layout(height=260, margin=dict(t=10), barmode="stack",
@@ -847,6 +986,40 @@ if not raw_log_f.empty and not dt_legend.empty and "CodeDT_num" in dt_legend.col
         st.info("Aucun arrêt enregistré pour la sélection actuelle.")
 else:
     st.info("Légende DT_LEGEND indisponible pour catégoriser les arrêts.")
+
+st.divider()
+
+# ----------------------------------------------------------------------------
+# NOUVEAU — Timeline (Gantt) des arrêts par machine
+# ----------------------------------------------------------------------------
+st.subheader("🕒 Timeline des états machine (Gantt)")
+st.caption("Visualise la succession Production / Arrêts dans le temps, machine par machine.")
+
+if not raw_cat_f.empty:
+    all_machines_gantt = sorted(raw_cat_f["Machine"].dropna().unique())
+    default_machines = all_machines_gantt[:6] if len(all_machines_gantt) > 6 else all_machines_gantt
+    machines_gantt = st.multiselect(
+        "Machine(s) à afficher", options=all_machines_gantt, default=default_machines, key="gantt_machines",
+    )
+    gantt_df = raw_cat_f[raw_cat_f["Machine"].isin(machines_gantt)].dropna(subset=["Start", "End"]).copy()
+
+    if not gantt_df.empty and machines_gantt:
+        fig_gantt = px.timeline(
+            gantt_df, x_start="Start", x_end="End", y="Machine", color="Categorie",
+            color_discrete_map=cat_color_map,
+            hover_data={"Libelle": True, "Commentaire": True, "Machine": False},
+        )
+        fig_gantt.update_yaxes(categoryorder="array", categoryarray=list(reversed(machines_gantt)))
+        fig_gantt.update_layout(
+            height=max(220, 55 * len(machines_gantt)), margin=dict(t=10),
+            xaxis_title="", yaxis_title="",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+        st.plotly_chart(fig_gantt, use_container_width=True)
+    else:
+        st.info("Sélectionne au moins une machine pour afficher la timeline.")
+else:
+    st.info("Pas assez de données (ou légende DT_LEGEND indisponible) pour ce graphique.")
 
 with st.expander("🔍 Voir les données détaillées filtrées"):
     if not raw_log_f.empty:
