@@ -378,8 +378,8 @@ def gauge(value, title, color):
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=v,
-        number={"suffix": " %", "font": {"size": 30}},
-        title={"text": title, "font": {"size": 16}},
+        number={"suffix": " %", "font": {"size": 22}},
+        title={"text": title, "font": {"size": 13}},
         gauge={
             "axis": {"range": [0, 100], "tickwidth": 1},
             "bar": {"color": color, "thickness": 0.3},
@@ -391,7 +391,33 @@ def gauge(value, title, color):
             ],
         },
     ))
-    fig.update_layout(height=220, margin=dict(t=40, b=10, l=20, r=20))
+    fig.update_layout(height=160, margin=dict(t=30, b=5, l=15, r=15))
+    return fig
+
+
+def half_donut_gauge(value_pct, title, color):
+    """Demi-cercle (jauge en donut coupé en deux) pour représenter un % (0-100)."""
+    v = 0 if value_pct is None else max(0.0, min(100.0, value_pct))
+    remainder = 100 - v
+    fig = go.Figure(go.Pie(
+        values=[v, remainder, 100],
+        rotation=90,
+        hole=0.65,
+        direction="clockwise",
+        sort=False,
+        marker=dict(colors=[color, "#E7EAF0", "rgba(0,0,0,0)"]),
+        textinfo="none",
+        hoverinfo="skip",
+        showlegend=False,
+    ))
+    fig.update_layout(
+        height=155,
+        margin=dict(t=28, b=0, l=6, r=6),
+        title=dict(text=title, x=0.5, y=0.98, font=dict(size=11)),
+        annotations=[dict(
+            text=f"<b>{v:.1f}%</b>", x=0.5, y=0.42, showarrow=False, font=dict(size=15),
+        )],
+    )
     return fig
 
 
@@ -534,47 +560,55 @@ g4.plotly_chart(gauge(kpis["OEE"], "OEE", ORANGE), use_container_width=True)
 st.divider()
 
 # ----------------------------------------------------------------------------
-# Rangée 2 : OEE par jour / OEE par CC
+# Rangée 2 : Availability par downtime code (demi-cercles)
 # ----------------------------------------------------------------------------
-c1, c2 = st.columns(2)
+st.subheader("Availability par downtime code")
+st.caption(
+    "Chaque demi-cercle montre le poids (en % du dénominateur d'Availability) "
+    "d'un code d'arrêt dans la sélection filtrée actuelle."
+)
 
-with c1:
-    st.subheader("Évolution de l'OEE par jour")
-    rows = []
-    for d in sorted(selected_dates):
-        rl_d = raw_log_f[raw_log_f["Date"] == d] if not raw_log_f.empty else pd.DataFrame()
-        sm_d = summary_f[summary_f["Date"] == d] if not summary_f.empty else pd.DataFrame()
-        k = compute_kpis(rl_d, sm_d)
-        if k["OEE"] is not None:
-            rows.append({"Date": d, "OEE %": k["OEE"] * 100})
-    if rows:
-        fig = px.line(pd.DataFrame(rows), x="Date", y="OEE %", markers=True,
-                      color_discrete_sequence=[APTIV_BLUE])
-        fig.update_yaxes(rangemode="tozero")
-        fig.update_layout(height=350, margin=dict(t=20))
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("Pas assez de données pour ce graphique.")
+denom_dispo = kpis["Temps de Fonctionnement (h)"] + kpis["Temps Arret Confesse (h)"]
 
-with c2:
-    st.subheader("OEE par CC")
-    rows = []
-    if not summary_f.empty and "CC" in summary_f.columns:
-        for cc in sorted(summary_f["CC"].dropna().unique()):
-            sm_cc = summary_f[summary_f["CC"] == cc]
-            machines_cc = set(sm_cc["Machine"].unique())
-            rl_cc = raw_log_f[raw_log_f["Machine"].isin(machines_cc)] if not raw_log_f.empty else pd.DataFrame()
-            k = compute_kpis(rl_cc, sm_cc)
-            if k["OEE"] is not None:
-                rows.append({"CC": cc, "OEE %": k["OEE"] * 100})
-    if rows:
-        fig = px.bar(pd.DataFrame(rows).sort_values("OEE %", ascending=False), x="CC", y="OEE %",
-                     color_discrete_sequence=[APTIV_LIGHT])
-        fig.update_yaxes(rangemode="tozero")
-        fig.update_layout(height=350, margin=dict(t=20))
-        st.plotly_chart(fig, use_container_width=True)
+if not raw_log_f.empty and denom_dispo > 0:
+    df_codes = (
+        raw_log_f[raw_log_f["Downtime reason"] != 0]
+        .groupby("Downtime reason")
+        .agg(**{
+            "confessed [h]": ("confessed [h]", "sum"),
+            "Downtime name": ("Downtime name", "first"),
+        })
+        .reset_index()
+    )
+
+    if not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
+        df_codes = df_codes.merge(
+            dt_legend[["CodeDT_num", "Libelle", "ColorHEX"]],
+            left_on="Downtime reason", right_on="CodeDT_num", how="left",
+        )
+        df_codes["Label"] = df_codes["Libelle"].fillna(df_codes["Downtime name"])
+        df_codes["Color"] = df_codes["ColorHEX"].fillna("#9E9E9E")
     else:
-        st.info("Pas assez de données pour ce graphique.")
+        df_codes["Label"] = df_codes["Downtime name"]
+        df_codes["Color"] = "#9E9E9E"
+
+    df_codes["Pct"] = df_codes["confessed [h]"] / denom_dispo * 100
+    df_codes = df_codes.sort_values("Pct", ascending=False)
+
+    if not df_codes.empty:
+        n_par_ligne = 6
+        rows_codes = [df_codes.iloc[i:i + n_par_ligne] for i in range(0, len(df_codes), n_par_ligne)]
+        for chunk in rows_codes:
+            cols = st.columns(len(chunk))
+            for col, (_, row) in zip(cols, chunk.iterrows()):
+                col.plotly_chart(
+                    half_donut_gauge(row["Pct"], row["Label"], row["Color"]),
+                    use_container_width=True,
+                )
+    else:
+        st.info("Aucun arrêt enregistré pour la sélection actuelle.")
+else:
+    st.info("Pas assez de données pour ce graphique.")
 
 st.divider()
 
@@ -609,7 +643,7 @@ if not summary_f.empty and "Average cycle (s)" in summary_f.columns:
             ),
             texttemplate="+%{x:.2f} s", textposition="outside",
         )
-        fig.update_layout(height=max(320, 40 * len(cyc_over)), margin=dict(t=10),
+        fig.update_layout(height=max(220, 26 * len(cyc_over)), margin=dict(t=10),
                            xaxis_title="Dépassement au-delà de la tolérance (s)", yaxis_title="")
         st.plotly_chart(fig, use_container_width=True)
     else:
@@ -651,7 +685,7 @@ if not raw_log_f.empty and not dt_legend.empty and "CodeDT_num" in dt_legend.col
             marker=dict(colors=colors),
             textinfo="percent", hovertemplate="<b>%{label}</b><br>%{value:.2f} h<extra></extra>",
         ))
-        fig_cat.update_layout(height=380, margin=dict(t=10, b=10), legend=dict(font=dict(size=10)))
+        fig_cat.update_layout(height=260, margin=dict(t=10, b=10), legend=dict(font=dict(size=9)))
         st.plotly_chart(fig_cat, use_container_width=True)
     else:
         st.info("Aucun arrêt enregistré pour la sélection actuelle.")
@@ -698,8 +732,8 @@ with col_pie:
                 marker=dict(colors=colors) if colors else {},
                 textinfo="percent", hovertemplate="<b>%{label}</b><br>%{value:.2f} h<extra></extra>",
             ))
-            fig.update_layout(height=400, margin=dict(t=10, b=10),
-                               legend=dict(font=dict(size=10)))
+            fig.update_layout(height=280, margin=dict(t=10, b=10),
+                               legend=dict(font=dict(size=9)))
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("Aucun arrêt enregistré pour la sélection actuelle.")
@@ -738,7 +772,7 @@ with col_bar:
                 color_discrete_map=colors_map if colors_map else None,
                 color_discrete_sequence=[RED] if not colors_map else None,
             )
-            fig.update_layout(height=400, margin=dict(t=10, b=10), showlegend=False,
+            fig.update_layout(height=280, margin=dict(t=10, b=10), showlegend=False,
                               xaxis_title="Heures d'arrêt", yaxis_title="")
             fig.update_traces(texttemplate="%{x:.2f} h", textposition="outside")
             st.plotly_chart(fig, use_container_width=True)
@@ -777,7 +811,7 @@ if not raw_log_f.empty and not dt_legend.empty and "CodeDT_num" in dt_legend.col
             color_discrete_map=cat_color_map_m,
             custom_data=["Categorie"],
         )
-        fig_m.update_layout(height=380, margin=dict(t=10), barmode="stack",
+        fig_m.update_layout(height=260, margin=dict(t=10), barmode="stack",
                              xaxis_title="", yaxis_title="Heures d'arrêt")
         event_m = st.plotly_chart(
             fig_m, use_container_width=True,
@@ -793,7 +827,7 @@ if not raw_log_f.empty and not dt_legend.empty and "CodeDT_num" in dt_legend.col
                 cat_sel = p["customdata"][0]
             detail = only_dt[
                 (only_dt["Machine"] == machine_sel) & (only_dt["Categorie"] == cat_sel)
-            ][["Machine", "Downtime name", "Commentaire", "confessed [h]", "Start", "End"]]
+            ][["Machine", "Downtime name", "Commentaire", "confessed [h]"]]
             st.markdown(f"**Détail — Machine `{machine_sel}` / catégorie `{cat_sel}`**")
             if not detail.empty:
                 st.dataframe(detail.sort_values("confessed [h]", ascending=False),
