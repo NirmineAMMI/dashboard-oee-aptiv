@@ -513,8 +513,6 @@ if raw_log.empty and summary.empty:
     st.warning("Aucune donnée exploitable trouvée pour le moment.")
     st.stop()
 
-st.caption(f"📁 {len(files)} fichier(s) chargé(s) : " + ", ".join(_name_of(f) for f in files))
-
 # ---- Filtres ----
 with st.sidebar:
     st.header("🔎 Filtres")
@@ -563,12 +561,6 @@ st.divider()
 # Rangée 2 : Availability par downtime code (demi-cercles)
 # ----------------------------------------------------------------------------
 st.subheader("Availability par catégorie de downtime code")
-st.caption(
-    "Chaque demi-cercle montre le poids (en % du dénominateur d'Availability) "
-    "d'une catégorie de code d'arrêt (Prod/Mnt/MG/TR/MPC/Qlt/ME/HR...) dans la "
-    "sélection filtrée actuelle — même regroupement et mêmes couleurs que le "
-    "donut « Répartition par code d'arrêt (catégorie) » ci-dessous."
-)
 
 denom_dispo = kpis["Temps de Fonctionnement (h)"] + kpis["Temps Arret Confesse (h)"]
 
@@ -614,11 +606,6 @@ st.divider()
 # Rangée 2bis : Machines dont le cycle time dépasse l'intervalle cible
 # ----------------------------------------------------------------------------
 st.subheader("⏱️ Cycle time hors tolérance")
-st.caption(
-    "Machines dont le temps de cycle moyen dépasse la borne supérieure de "
-    "l'intervalle cible (Target cycle time ± tolérance). Les machines dans "
-    "l'intervalle, ou plus rapides que la cible, ne sont pas affichées."
-)
 if not summary_f.empty and "Average cycle (s)" in summary_f.columns:
     cyc = summary_f.dropna(subset=["Average cycle (s)", "Target cycle (s)"]).copy()
     cyc["Tolerance cycle (s)"] = cyc["Tolerance cycle (s)"].fillna(0)
@@ -803,7 +790,6 @@ with col_bar:
         st.info("Pas de données disponibles.")
 
 st.subheader("Code d'arrêt (catégorie) par machine")
-st.caption("Clique sur une barre pour voir le détail des événements correspondants (nom de l'arrêt et commentaire).")
 if not raw_log_f.empty and not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
     raw_with_cat_m = raw_log_f.merge(
         dt_legend[["CodeDT_num", "Categorie", "ColorHEX"]],
