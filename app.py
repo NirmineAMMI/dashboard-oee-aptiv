@@ -1,7 +1,12 @@
 """
-Dashboard OEE - Aptiv (version sans admin)
-==========================================
-Lit automatiquement tous les fichiers Excel journaliers dans le dossier 'data'
+Dashboard OEE - Aptiv (version design amélioré)
+=================================================
+Lit automatiquement tous les fichiers Excel journaliers déposés dans un dossier
+(chacun avec les onglets "DATA 1"/"DATA 2"/"DT" -- OU "SUMMARY"/"DT_LEGEND",
+les deux noms sont acceptés), calcule Availability, Performance, Quality et OEE,
+et affiche un dashboard interactif filtrable par Date, Shift (A/B/C) et CC.
+
+Lancer avec :  streamlit run app.py
 """
 
 import glob
@@ -39,12 +44,14 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+
 # ----------------------------------------------------------------------------
 # Fonctions de lecture / nettoyage des données
 # ----------------------------------------------------------------------------
 def _clean_columns(df: pd.DataFrame) -> pd.DataFrame:
     df.columns = [str(c).strip() for c in df.columns]
     return df
+
 
 def _code_to_int(code) -> "int | None":
     """Convertit un code DT en entier, quel que soit son format d'origine :
@@ -66,6 +73,7 @@ def _code_to_int(code) -> "int | None":
         return ord(s) - ord("A") + 10
     return None
 
+
 def _find_col(df: pd.DataFrame, *keywords: str):
     """Trouve la 1ère colonne dont le nom (en minuscules) contient tous les mots-clés donnés."""
     for col in df.columns:
@@ -73,6 +81,7 @@ def _find_col(df: pd.DataFrame, *keywords: str):
         if all(k in cl for k in keywords):
             return col
     return None
+
 
 def _parse_fr_float(x):
     """Convertit un nombre écrit à la française ('15,32') en float (15.32)."""
@@ -83,6 +92,7 @@ def _parse_fr_float(x):
     s = str(x).strip().replace(",", ".")
     m = re.search(r"[-+]?\d*\.?\d+", s)
     return float(m.group()) if m else None
+
 
 def _parse_target_cycle(x):
     """Parse une cellule 'Target - cycle time' du type '15,00 ± 1,50 s'.
@@ -98,9 +108,11 @@ def _parse_target_cycle(x):
         return float(m2.group(1)), 0.0
     return None, None
 
+
 def _name_of(f) -> str:
     """Nom du fichier, qu'il s'agisse d'un chemin (str) ou d'un fichier uploadé (UploadedFile)."""
     return getattr(f, "name", None) or os.path.basename(str(f))
+
 
 def _reset(f):
     """Remet le curseur au début pour un fichier uploadé (relecture possible)."""
@@ -109,6 +121,7 @@ def _reset(f):
             f.seek(0)
         except Exception:
             pass
+
 
 def _first_matching_sheet(filepath, candidates: list) -> str | None:
     """Retourne le 1er nom d'onglet existant parmi une liste de noms possibles.
@@ -124,6 +137,7 @@ def _first_matching_sheet(filepath, candidates: list) -> str | None:
     except Exception:
         pass
     return None
+
 
 def read_raw_log_from_file(filepath) -> pd.DataFrame:
     """Lit le journal d'événements (onglet 'DATA 1', accepte aussi 'RAW_LOG')."""
@@ -165,6 +179,7 @@ def read_raw_log_from_file(filepath) -> pd.DataFrame:
     df["Shift"] = df["Start"].dt.hour.apply(_shift)
     df["Fichier_Source"] = _name_of(filepath)
     return df
+
 
 def read_summary_from_file(filepath) -> pd.DataFrame:
     """Lit le résumé quotidien (onglet 'DATA 2', accepte aussi 'SUMMARY').
@@ -237,6 +252,7 @@ def read_summary_from_file(filepath) -> pd.DataFrame:
     out["Fichier_Source"] = _name_of(filepath)
     return out
 
+
 def read_dt_legend_from_file(filepath) -> pd.DataFrame:
     """Lit la légende des codes d'arrêt (onglet 'DT', accepte aussi 'DT_LEGEND')."""
     sheet = _first_matching_sheet(filepath, ["DT", "DT_LEGEND"])
@@ -286,6 +302,7 @@ def read_dt_legend_from_file(filepath) -> pd.DataFrame:
         df["ColorHEX"] = "#9E9E9E"
     return df
 
+
 @st.cache_data(show_spinner=True)
 def load_all_data(files: list):
     """files : liste de chemins (mode dossier local) OU de fichiers uploadés (st.file_uploader)."""
@@ -320,6 +337,7 @@ def load_all_data(files: list):
     summary = pd.concat(summaries, ignore_index=True) if summaries else pd.DataFrame()
     return raw_log, summary, dt_legend, files, errors
 
+
 # ----------------------------------------------------------------------------
 # Mesures OEE
 # ----------------------------------------------------------------------------
@@ -349,8 +367,10 @@ def compute_kpis(raw_log: pd.DataFrame, summary: pd.DataFrame) -> dict:
         "Total Yield": total_yield, "Total Scrap": total_scrap,
     }
 
+
 def fmt_pct(x):
     return f"{x * 100:.1f} %" if x is not None else "N/A"
+
 
 def gauge(value, title, color):
     """Jauge circulaire style 'compteur' pour un KPI en %."""
@@ -373,6 +393,7 @@ def gauge(value, title, color):
     ))
     fig.update_layout(height=160, margin=dict(t=30, b=5, l=15, r=15))
     return fig
+
 
 def half_donut_gauge(value_pct, title, color):
     """Demi-cercle (jauge en donut coupé en deux) pour représenter un % (0-100)."""
@@ -399,67 +420,112 @@ def half_donut_gauge(value_pct, title, color):
     )
     return fig
 
-# ----------------------------------------------------------------------------
-# Chargement des données - Version sans admin
-# ----------------------------------------------------------------------------
+
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
+
+
+def _get_admins() -> dict:
+    """Récupère les comptes admin (nom -> mot de passe) depuis les secrets Streamlit."""
+    try:
+        return dict(st.secrets["admins"])
+    except Exception:
+        return {}
+
 
 def _list_stored_files() -> list:
     files = sorted(glob.glob(os.path.join(DATA_DIR, "*.xlsx")))
     return [f for f in files if not os.path.basename(f).startswith("~$")]
 
+
 # ----------------------------------------------------------------------------
-# Interface principale
+# Interface
 # ----------------------------------------------------------------------------
 st.title("📊 Dashboard OEE — Département Production")
 
-# ---- Barre latérale avec filtres (toujours affichée) ----
-with st.sidebar:
-    st.header("📁 Gestion des données")
-    
-    # Afficher le nombre de fichiers disponibles
-    files_on_disk = _list_stored_files()
-    st.info(f"📊 {len(files_on_disk)} fichier(s) trouvé(s) dans le dossier 'data'")
-    
-    st.divider()
-    st.header("🔎 Filtres")
-    
-    # Si des fichiers existent, afficher les filtres
-    if files_on_disk:
-        # Chargement des données
-        with st.spinner("Chargement des données..."):
-            raw_log, summary, dt_legend, files, errors = load_all_data(files_on_disk)
-        
-        if errors:
-            with st.expander("⚠️ Fichiers non lus correctement"):
-                for e in errors:
-                    st.write("-", e)
-        
-        if not raw_log.empty and not summary.empty:
-            all_dates = sorted(set(raw_log.get("Date", pd.Series(dtype=object))) |
-                               set(summary.get("Date", pd.Series(dtype=object))))
-            if all_dates:
-                selected_dates = st.multiselect("Date(s)", options=all_dates, default=all_dates)
-                selected_shifts = st.multiselect("Shift(s)", options=["A", "B", "C"], default=["A", "B", "C"])
-                all_cc = sorted(summary["CC"].dropna().unique()) if "CC" in summary.columns and not summary.empty else []
-                selected_cc = st.multiselect("CC (cellule)", options=all_cc, default=all_cc)
-                
-                st.divider()
-                st.caption(f"📅 {len(all_dates)} jour(s) de données")
-            else:
-                st.warning("Aucune date trouvée dans les données.")
-                st.stop()
-        else:
-            st.warning("Aucune donnée exploitable trouvée.")
-            st.stop()
-    else:
-        st.info("📁 Placez vos fichiers Excel (.xlsx) dans le dossier 'data'")
-        st.info("pour commencer à utiliser le dashboard.")
-        st.stop()
+if "is_admin" not in st.session_state:
+    st.session_state.is_admin = False
+    st.session_state.admin_user = None
 
-# ---- Suite du dashboard (affiché seulement si des données sont disponibles) ----
-# Application des filtres
+with st.sidebar:
+    st.header("🔐 Espace administrateur")
+
+    if not st.session_state.is_admin:
+        with st.form("login_form"):
+            username = st.text_input("Nom d'utilisateur")
+            password = st.text_input("Mot de passe", type="password")
+            submitted = st.form_submit_button("Se connecter")
+        if submitted:
+            admins = _get_admins()
+            if username in admins and password == admins[username]:
+                st.session_state.is_admin = True
+                st.session_state.admin_user = username
+                st.rerun()
+            else:
+                st.error("Identifiants incorrects.")
+    else:
+        st.success(f"Connecté : {st.session_state.admin_user}")
+        if st.button("Se déconnecter"):
+            st.session_state.is_admin = False
+            st.session_state.admin_user = None
+            st.rerun()
+
+        st.divider()
+        st.subheader("📤 Ajouter des fichiers")
+        new_files = st.file_uploader(
+            "Fichiers Excel journaliers (.xlsx)",
+            type=["xlsx"], accept_multiple_files=True, key="admin_uploader",
+        )
+        if new_files and st.button("Enregistrer dans le stock", use_container_width=True):
+            for f in new_files:
+                with open(os.path.join(DATA_DIR, f.name), "wb") as out:
+                    out.write(f.getbuffer())
+            st.cache_data.clear()
+            st.success(f"{len(new_files)} fichier(s) ajouté(s).")
+            st.rerun()
+
+        st.divider()
+        st.subheader("🗑️ Fichiers stockés")
+        stored = [os.path.basename(f) for f in _list_stored_files()]
+        if stored:
+            to_delete = st.selectbox("Supprimer un fichier", ["-"] + stored)
+            if to_delete != "-" and st.button(f"Confirmer la suppression"):
+                os.remove(os.path.join(DATA_DIR, to_delete))
+                st.cache_data.clear()
+                st.rerun()
+        else:
+            st.caption("Aucun fichier stocké pour le moment.")
+
+files_on_disk = _list_stored_files()
+
+if not files_on_disk:
+    st.info("Aucune donnée disponible pour le moment. Un administrateur doit se connecter pour ajouter des fichiers.")
+    st.stop()
+
+raw_log, summary, dt_legend, files, errors = load_all_data(files_on_disk)
+
+if errors:
+    with st.expander("⚠️ Fichiers non lus correctement"):
+        for e in errors:
+            st.write("-", e)
+
+if raw_log.empty and summary.empty:
+    st.warning("Aucune donnée exploitable trouvée pour le moment.")
+    st.stop()
+
+# ---- Filtres ----
+with st.sidebar:
+    st.header("🔎 Filtres")
+    all_dates = sorted(set(raw_log.get("Date", pd.Series(dtype=object))) |
+                       set(summary.get("Date", pd.Series(dtype=object))))
+    if not all_dates:
+        st.warning("Aucune date trouvée.")
+        st.stop()
+    selected_dates = st.multiselect("Date(s)", options=all_dates, default=all_dates)
+    selected_shifts = st.multiselect("Shift(s)", options=["A", "B", "C"], default=["A", "B", "C"])
+    all_cc = sorted(summary["CC"].dropna().unique()) if "CC" in summary.columns and not summary.empty else []
+    selected_cc = st.multiselect("CC (cellule)", options=all_cc, default=all_cc)
+
 summary_f = summary[
     summary["Date"].isin(selected_dates) & (summary["CC"].isin(selected_cc) if selected_cc else True)
 ].copy() if not summary.empty else pd.DataFrame()
@@ -636,6 +702,14 @@ else:
 
 st.divider()
 col_pie, col_bar = st.columns(2)
+
+# NOTE IMPORTANTE :
+# - Dans "DATA 1", "Downtime reason" contient le CODE (0, 1, 4, ... 31) et
+#   "Downtime name" contient le TEXTE de la cause.
+# - Dans "DT_LEGEND", c'est l'inverse : "CodeDT" (colonne "Downtime name" du fichier)
+#   contient le code, et "Libelle" (colonne "Downtime reason" du fichier) contient le texte.
+# On fusionne donc désormais sur le CODE numérique normalisé (CodeDT_num vs Downtime reason),
+# et non plus sur le texte, pour que ColorHEX se rattache correctement à chaque cause.
 
 with col_pie:
     st.markdown("**Répartition par cause**")
