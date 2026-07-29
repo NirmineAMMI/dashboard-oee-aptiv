@@ -89,13 +89,16 @@ def _reset(f):
 
 
 def _first_matching_sheet(filepath, candidates: list) -> str | None:
-    """Retourne le 1er nom d'onglet existant parmi une liste de noms possibles."""
+    """Retourne le 1er nom d'onglet existant parmi une liste de noms possibles.
+    Compare en ignorant les espaces en début/fin (les exports du logiciel machine
+    ajoutent parfois une espace en trop, ex. 'DATA 1 ' au lieu de 'DATA 1')."""
     try:
         _reset(filepath)
         xls = pd.ExcelFile(filepath)
-        for name in candidates:
-            if name in xls.sheet_names:
-                return name
+        stripped_map = {name.strip(): name for name in xls.sheet_names}
+        for candidate in candidates:
+            if candidate in stripped_map:
+                return stripped_map[candidate]
     except Exception:
         pass
     return None
