@@ -194,7 +194,12 @@ def read_summary_from_file(filepath) -> pd.DataFrame:
     df = pd.read_excel(filepath, sheet_name=sheet)
     df = _clean_columns(df)
 
-    col_machine = _find_col(df, "machine")
+    # Détection d'un éventuel tableau annexe Machine -> CC, placé à côté du tableau
+    # principal dans le même onglet (colonnes 'machine' en minuscule + 'CC').
+    # On le repère par la présence de DEUX colonnes nommées "machine" (insensible à la
+    # casse) : la 1ère est le tableau principal, la 2nde est le tableau de correspondance.
+    machine_cols = [c for c in df.columns if c.lower().strip() == "machine"]
+    col_machine = machine_cols[0] if machine_cols else _find_col(df, "machine")
     col_yield = _find_col(df, "yield")
     col_scrap = next((c for c in df.columns if c.lower().strip() == "scrap"), None)
     col_efficiency = _find_col(df, "efficiency")
@@ -209,12 +214,25 @@ def read_summary_from_file(filepath) -> pd.DataFrame:
         st.warning(f"Colonnes Machine/Yield introuvables dans {_name_of(filepath)}")
         return pd.DataFrame()
 
+    cc_lookup = None
+    if len(machine_cols) > 1 and col_cc:
+        side_machine_col = machine_cols[1]
+        lookup_df = df[[side_machine_col, col_cc]].dropna()
+        cc_lookup = dict(zip(
+            lookup_df[side_machine_col].astype(str).str.strip(), lookup_df[col_cc],
+        ))
+
     out = pd.DataFrame()
     out["Machine"] = df[col_machine]
     out["Yield"] = pd.to_numeric(df[col_yield], errors="coerce").fillna(0)
     out["Scrap"] = pd.to_numeric(df[col_scrap], errors="coerce").fillna(0) if col_scrap else 0
     out["Efficiency"] = pd.to_numeric(df[col_efficiency], errors="coerce") if col_efficiency else float("nan")
-    out["CC"] = df[col_cc] if col_cc else "N/A"
+    if cc_lookup:
+        out["CC"] = out["Machine"].astype(str).str.strip().map(cc_lookup).fillna("N/A")
+    elif col_cc:
+        out["CC"] = df[col_cc]
+    else:
+        out["CC"] = "N/A"
     out["Date"] = pd.to_datetime(df[col_date], errors="coerce").dt.date if col_date else pd.NaT
     out["Article number"] = df[col_art_num] if col_art_num else None
     out["Article name"] = df[col_art_name] if col_art_name else None
