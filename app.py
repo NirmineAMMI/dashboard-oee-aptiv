@@ -1,12 +1,7 @@
 """
-Dashboard OEE - Aptiv (version design amélioré)
-=================================================
-Lit automatiquement tous les fichiers Excel journaliers déposés dans un dossier
-(chacun avec les onglets "DATA 1"/"DATA 2"/"DT" -- OU "SUMMARY"/"DT_LEGEND",
-les deux noms sont acceptés), calcule Availability, Performance, Quality et OEE,
-et affiche un dashboard interactif filtrable par Date, Shift (A/B/C) et CC.
-
-Lancer avec :  streamlit run app.py
+Dashboard OEE - Aptiv (version sans admin)
+==========================================
+Lit automatiquement tous les fichiers Excel journaliers dans le dossier 'data'
 """
 
 import glob
@@ -44,14 +39,12 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-
 # ----------------------------------------------------------------------------
 # Fonctions de lecture / nettoyage des données
 # ----------------------------------------------------------------------------
 def _clean_columns(df: pd.DataFrame) -> pd.DataFrame:
     df.columns = [str(c).strip() for c in df.columns]
     return df
-
 
 def _code_to_int(code) -> "int | None":
     """Convertit un code DT en entier, quel que soit son format d'origine :
@@ -73,7 +66,6 @@ def _code_to_int(code) -> "int | None":
         return ord(s) - ord("A") + 10
     return None
 
-
 def _find_col(df: pd.DataFrame, *keywords: str):
     """Trouve la 1ère colonne dont le nom (en minuscules) contient tous les mots-clés donnés."""
     for col in df.columns:
@@ -81,7 +73,6 @@ def _find_col(df: pd.DataFrame, *keywords: str):
         if all(k in cl for k in keywords):
             return col
     return None
-
 
 def _parse_fr_float(x):
     """Convertit un nombre écrit à la française ('15,32') en float (15.32)."""
@@ -92,7 +83,6 @@ def _parse_fr_float(x):
     s = str(x).strip().replace(",", ".")
     m = re.search(r"[-+]?\d*\.?\d+", s)
     return float(m.group()) if m else None
-
 
 def _parse_target_cycle(x):
     """Parse une cellule 'Target - cycle time' du type '15,00 ± 1,50 s'.
@@ -108,11 +98,9 @@ def _parse_target_cycle(x):
         return float(m2.group(1)), 0.0
     return None, None
 
-
 def _name_of(f) -> str:
     """Nom du fichier, qu'il s'agisse d'un chemin (str) ou d'un fichier uploadé (UploadedFile)."""
     return getattr(f, "name", None) or os.path.basename(str(f))
-
 
 def _reset(f):
     """Remet le curseur au début pour un fichier uploadé (relecture possible)."""
@@ -121,7 +109,6 @@ def _reset(f):
             f.seek(0)
         except Exception:
             pass
-
 
 def _first_matching_sheet(filepath, candidates: list) -> str | None:
     """Retourne le 1er nom d'onglet existant parmi une liste de noms possibles.
@@ -137,7 +124,6 @@ def _first_matching_sheet(filepath, candidates: list) -> str | None:
     except Exception:
         pass
     return None
-
 
 def read_raw_log_from_file(filepath) -> pd.DataFrame:
     """Lit le journal d'événements (onglet 'DATA 1', accepte aussi 'RAW_LOG')."""
@@ -179,7 +165,6 @@ def read_raw_log_from_file(filepath) -> pd.DataFrame:
     df["Shift"] = df["Start"].dt.hour.apply(_shift)
     df["Fichier_Source"] = _name_of(filepath)
     return df
-
 
 def read_summary_from_file(filepath) -> pd.DataFrame:
     """Lit le résumé quotidien (onglet 'DATA 2', accepte aussi 'SUMMARY').
@@ -252,7 +237,6 @@ def read_summary_from_file(filepath) -> pd.DataFrame:
     out["Fichier_Source"] = _name_of(filepath)
     return out
 
-
 def read_dt_legend_from_file(filepath) -> pd.DataFrame:
     """Lit la légende des codes d'arrêt (onglet 'DT', accepte aussi 'DT_LEGEND')."""
     sheet = _first_matching_sheet(filepath, ["DT", "DT_LEGEND"])
@@ -302,7 +286,6 @@ def read_dt_legend_from_file(filepath) -> pd.DataFrame:
         df["ColorHEX"] = "#9E9E9E"
     return df
 
-
 @st.cache_data(show_spinner=True)
 def load_all_data(files: list):
     """files : liste de chemins (mode dossier local) OU de fichiers uploadés (st.file_uploader)."""
@@ -337,7 +320,6 @@ def load_all_data(files: list):
     summary = pd.concat(summaries, ignore_index=True) if summaries else pd.DataFrame()
     return raw_log, summary, dt_legend, files, errors
 
-
 # ----------------------------------------------------------------------------
 # Mesures OEE
 # ----------------------------------------------------------------------------
@@ -367,10 +349,8 @@ def compute_kpis(raw_log: pd.DataFrame, summary: pd.DataFrame) -> dict:
         "Total Yield": total_yield, "Total Scrap": total_scrap,
     }
 
-
 def fmt_pct(x):
     return f"{x * 100:.1f} %" if x is not None else "N/A"
-
 
 def gauge(value, title, color):
     """Jauge circulaire style 'compteur' pour un KPI en %."""
@@ -393,7 +373,6 @@ def gauge(value, title, color):
     ))
     fig.update_layout(height=160, margin=dict(t=30, b=5, l=15, r=15))
     return fig
-
 
 def half_donut_gauge(value_pct, title, color):
     """Demi-cercle (jauge en donut coupé en deux) pour représenter un % (0-100)."""
@@ -420,89 +399,32 @@ def half_donut_gauge(value_pct, title, color):
     )
     return fig
 
-
+# ----------------------------------------------------------------------------
+# Chargement des données - Version sans admin
+# ----------------------------------------------------------------------------
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
-
-
-def _get_admins() -> dict:
-    """Récupère les comptes admin (nom -> mot de passe) depuis les secrets Streamlit."""
-    try:
-        return dict(st.secrets["admins"])
-    except Exception:
-        return {}
-
 
 def _list_stored_files() -> list:
     files = sorted(glob.glob(os.path.join(DATA_DIR, "*.xlsx")))
     return [f for f in files if not os.path.basename(f).startswith("~$")]
 
-
 # ----------------------------------------------------------------------------
-# Interface
+# Interface principale
 # ----------------------------------------------------------------------------
 st.title("📊 Dashboard OEE — Département Production")
 
-if "is_admin" not in st.session_state:
-    st.session_state.is_admin = False
-    st.session_state.admin_user = None
-
-with st.sidebar:
-    st.header("🔐 Espace administrateur")
-
-    if not st.session_state.is_admin:
-        with st.form("login_form"):
-            username = st.text_input("Nom d'utilisateur")
-            password = st.text_input("Mot de passe", type="password")
-            submitted = st.form_submit_button("Se connecter")
-        if submitted:
-            admins = _get_admins()
-            if username in admins and password == admins[username]:
-                st.session_state.is_admin = True
-                st.session_state.admin_user = username
-                st.rerun()
-            else:
-                st.error("Identifiants incorrects.")
-    else:
-        st.success(f"Connecté : {st.session_state.admin_user}")
-        if st.button("Se déconnecter"):
-            st.session_state.is_admin = False
-            st.session_state.admin_user = None
-            st.rerun()
-
-        st.divider()
-        st.subheader("📤 Ajouter des fichiers")
-        new_files = st.file_uploader(
-            "Fichiers Excel journaliers (.xlsx)",
-            type=["xlsx"], accept_multiple_files=True, key="admin_uploader",
-        )
-        if new_files and st.button("Enregistrer dans le stock", use_container_width=True):
-            for f in new_files:
-                with open(os.path.join(DATA_DIR, f.name), "wb") as out:
-                    out.write(f.getbuffer())
-            st.cache_data.clear()
-            st.success(f"{len(new_files)} fichier(s) ajouté(s).")
-            st.rerun()
-
-        st.divider()
-        st.subheader("🗑️ Fichiers stockés")
-        stored = [os.path.basename(f) for f in _list_stored_files()]
-        if stored:
-            to_delete = st.selectbox("Supprimer un fichier", ["-"] + stored)
-            if to_delete != "-" and st.button(f"Confirmer la suppression"):
-                os.remove(os.path.join(DATA_DIR, to_delete))
-                st.cache_data.clear()
-                st.rerun()
-        else:
-            st.caption("Aucun fichier stocké pour le moment.")
-
+# Charger automatiquement les fichiers du dossier data
 files_on_disk = _list_stored_files()
 
 if not files_on_disk:
-    st.info("Aucune donnée disponible pour le moment. Un administrateur doit se connecter pour ajouter des fichiers.")
+    st.info("📁 Aucune donnée disponible pour le moment.")
+    st.info("Placez vos fichiers Excel (.xlsx) dans le dossier 'data' pour commencer.")
     st.stop()
 
-raw_log, summary, dt_legend, files, errors = load_all_data(files_on_disk)
+# Chargement des données
+with st.spinner("Chargement des données..."):
+    raw_log, summary, dt_legend, files, errors = load_all_data(files_on_disk)
 
 if errors:
     with st.expander("⚠️ Fichiers non lus correctement"):
@@ -525,7 +447,12 @@ with st.sidebar:
     selected_shifts = st.multiselect("Shift(s)", options=["A", "B", "C"], default=["A", "B", "C"])
     all_cc = sorted(summary["CC"].dropna().unique()) if "CC" in summary.columns and not summary.empty else []
     selected_cc = st.multiselect("CC (cellule)", options=all_cc, default=all_cc)
+    
+    st.divider()
+    st.caption(f"📊 {len(files_on_disk)} fichier(s) chargé(s)")
+    st.caption(f"📅 {len(all_dates)} jour(s) de données")
 
+# Application des filtres
 summary_f = summary[
     summary["Date"].isin(selected_dates) & (summary["CC"].isin(selected_cc) if selected_cc else True)
 ].copy() if not summary.empty else pd.DataFrame()
@@ -703,14 +630,6 @@ else:
 st.divider()
 col_pie, col_bar = st.columns(2)
 
-# NOTE IMPORTANTE :
-# - Dans "DATA 1", "Downtime reason" contient le CODE (0, 1, 4, ... 31) et
-#   "Downtime name" contient le TEXTE de la cause.
-# - Dans "DT_LEGEND", c'est l'inverse : "CodeDT" (colonne "Downtime name" du fichier)
-#   contient le code, et "Libelle" (colonne "Downtime reason" du fichier) contient le texte.
-# On fusionne donc désormais sur le CODE numérique normalisé (CodeDT_num vs Downtime reason),
-# et non plus sur le texte, pour que ColorHEX se rattache correctement à chaque cause.
-
 with col_pie:
     st.markdown("**Répartition par cause**")
     if not raw_log_f.empty:
@@ -738,123 +657,4 @@ with col_pie:
             fig = go.Figure(go.Pie(
                 labels=df_dt["Label"], values=df_dt["confessed [h]"], hole=0.45,
                 marker=dict(colors=colors) if colors else {},
-                textinfo="percent", hovertemplate="<b>%{label}</b><br>%{value:.2f} h<extra></extra>",
-            ))
-            fig.update_layout(height=280, margin=dict(t=10, b=10),
-                               legend=dict(font=dict(size=9)))
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Aucun arrêt enregistré pour la sélection actuelle.")
-    else:
-        st.info("Pas de données disponibles.")
-
-with col_bar:
-    st.markdown("**Top 10 des causes (heures)**")
-    if not raw_log_f.empty:
-        df_c = (
-            raw_log_f[raw_log_f["Downtime reason"] != 0]
-            .groupby("Downtime reason")
-            .agg(**{
-                "confessed [h]": ("confessed [h]", "sum"),
-                "Downtime name": ("Downtime name", "first"),
-            })
-            .reset_index()
-            .sort_values("confessed [h]", ascending=True)
-            .tail(10)
-        )
-        if not df_c.empty and df_c["confessed [h]"].sum() > 0:
-            if not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
-                df_c = df_c.merge(
-                    dt_legend[["CodeDT_num", "Libelle", "ColorHEX"]],
-                    left_on="Downtime reason", right_on="CodeDT_num", how="left",
-                )
-                df_c["Label"] = df_c["Libelle"].fillna(df_c["Downtime name"])
-                colors_map = {row["Label"]: (row["ColorHEX"] if pd.notna(row["ColorHEX"]) else "#9E9E9E")
-                              for _, row in df_c.iterrows()}
-            else:
-                df_c["Label"] = df_c["Downtime name"]
-                colors_map = None
-            fig = px.bar(
-                df_c, x="confessed [h]", y="Label", orientation="h",
-                color="Label" if colors_map else None,
-                color_discrete_map=colors_map if colors_map else None,
-                color_discrete_sequence=[RED] if not colors_map else None,
-            )
-            fig.update_layout(height=280, margin=dict(t=10, b=10), showlegend=False,
-                              xaxis_title="Heures d'arrêt", yaxis_title="")
-            fig.update_traces(texttemplate="%{x:.2f} h", textposition="outside")
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Aucun arrêt enregistré pour la sélection actuelle.")
-    else:
-        st.info("Pas de données disponibles.")
-
-st.subheader("Code d'arrêt (catégorie) par machine")
-if not raw_log_f.empty and not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
-    raw_with_cat_m = raw_log_f.merge(
-        dt_legend[["CodeDT_num", "Categorie", "ColorHEX"]],
-        left_on="Downtime reason", right_on="CodeDT_num", how="left",
-    )
-    raw_with_cat_m["Categorie"] = raw_with_cat_m["Categorie"].fillna("Non catégorisé")
-    only_dt = raw_with_cat_m[raw_with_cat_m["Downtime reason"] != 0]
-
-    df_mc = (
-        only_dt.groupby(["Machine", "Categorie"])["confessed [h]"].sum()
-        .reset_index()
-    )
-    if not df_mc.empty and df_mc["confessed [h]"].sum() > 0:
-        cat_color_map_m = (
-            raw_with_cat_m.dropna(subset=["Categorie"])
-            .drop_duplicates(subset=["Categorie"])
-            .set_index("Categorie")["ColorHEX"].to_dict()
-        )
-        machine_order = (
-            df_mc.groupby("Machine")["confessed [h]"].sum()
-            .sort_values(ascending=False).index.tolist()
-        )
-        fig_m = px.bar(
-            df_mc, x="Machine", y="confessed [h]", color="Categorie",
-            category_orders={"Machine": machine_order},
-            color_discrete_map=cat_color_map_m,
-            custom_data=["Categorie"],
-        )
-        fig_m.update_layout(height=260, margin=dict(t=10), barmode="stack",
-                             xaxis_title="", yaxis_title="Heures d'arrêt")
-        event_m = st.plotly_chart(
-            fig_m, use_container_width=True,
-            on_select="rerun", selection_mode="points", key="machine_cat_chart",
-        )
-
-        points = (event_m or {}).get("selection", {}).get("points", [])
-        if points:
-            p = points[0]
-            machine_sel = p.get("x")
-            cat_sel = None
-            if "customdata" in p and p["customdata"]:
-                cat_sel = p["customdata"][0]
-            detail = only_dt[
-                (only_dt["Machine"] == machine_sel) & (only_dt["Categorie"] == cat_sel)
-            ][["Machine", "Downtime name", "Commentaire", "confessed [h]"]]
-            st.markdown(f"**Détail — Machine `{machine_sel}` / catégorie `{cat_sel}`**")
-            if not detail.empty:
-                st.dataframe(detail.sort_values("confessed [h]", ascending=False),
-                             use_container_width=True, hide_index=True)
-            else:
-                st.caption("Aucun détail trouvé pour cette sélection.")
-        else:
-            st.caption("👆 Clique sur une barre du graphique pour afficher le détail des arrêts correspondants.")
-    else:
-        st.info("Aucun arrêt enregistré pour la sélection actuelle.")
-else:
-    st.info("Légende DT_LEGEND indisponible pour catégoriser les arrêts.")
-
-with st.expander("🔍 Voir les données détaillées filtrées"):
-    if not raw_log_f.empty:
-        st.write("**RAW_LOG**")
-        st.dataframe(raw_log_f, use_container_width=True)
-    if not summary_f.empty:
-        st.write("**SUMMARY**")
-        st.dataframe(summary_f, use_container_width=True)
-    if not dt_legend.empty:
-        st.write("**DT_LEGEND**")
-        st.dataframe(dt_legend, use_container_width=True)
+                textinfo
