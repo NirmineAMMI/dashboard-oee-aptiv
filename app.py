@@ -657,4 +657,123 @@ with col_pie:
             fig = go.Figure(go.Pie(
                 labels=df_dt["Label"], values=df_dt["confessed [h]"], hole=0.45,
                 marker=dict(colors=colors) if colors else {},
-                textinfo
+                textinfo="percent", hovertemplate="<b>%{label}</b><br>%{value:.2f} h<extra></extra>",
+            ))
+            fig.update_layout(height=280, margin=dict(t=10, b=10),
+                               legend=dict(font=dict(size=9)))
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Aucun arrêt enregistré pour la sélection actuelle.")
+    else:
+        st.info("Pas de données disponibles.")
+
+with col_bar:
+    st.markdown("**Top 10 des causes (heures)**")
+    if not raw_log_f.empty:
+        df_c = (
+            raw_log_f[raw_log_f["Downtime reason"] != 0]
+            .groupby("Downtime reason")
+            .agg(**{
+                "confessed [h]": ("confessed [h]", "sum"),
+                "Downtime name": ("Downtime name", "first"),
+            })
+            .reset_index()
+            .sort_values("confessed [h]", ascending=True)
+            .tail(10)
+        )
+        if not df_c.empty and df_c["confessed [h]"].sum() > 0:
+            if not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
+                df_c = df_c.merge(
+                    dt_legend[["CodeDT_num", "Libelle", "ColorHEX"]],
+                    left_on="Downtime reason", right_on="CodeDT_num", how="left",
+                )
+                df_c["Label"] = df_c["Libelle"].fillna(df_c["Downtime name"])
+                colors_map = {row["Label"]: (row["ColorHEX"] if pd.notna(row["ColorHEX"]) else "#9E9E9E")
+                              for _, row in df_c.iterrows()}
+            else:
+                df_c["Label"] = df_c["Downtime name"]
+                colors_map = None
+            fig = px.bar(
+                df_c, x="confessed [h]", y="Label", orientation="h",
+                color="Label" if colors_map else None,
+                color_discrete_map=colors_map if colors_map else None,
+                color_discrete_sequence=[RED] if not colors_map else None,
+            )
+            fig.update_layout(height=280, margin=dict(t=10, b=10), showlegend=False,
+                              xaxis_title="Heures d'arrêt", yaxis_title="")
+            fig.update_traces(texttemplate="%{x:.2f} h", textposition="outside")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Aucun arrêt enregistré pour la sélection actuelle.")
+    else:
+        st.info("Pas de données disponibles.")
+
+st.subheader("Code d'arrêt (catégorie) par machine")
+if not raw_log_f.empty and not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
+    raw_with_cat_m = raw_log_f.merge(
+        dt_legend[["CodeDT_num", "Categorie", "ColorHEX"]],
+        left_on="Downtime reason", right_on="CodeDT_num", how="left",
+    )
+    raw_with_cat_m["Categorie"] = raw_with_cat_m["Categorie"].fillna("Non catégorisé")
+    only_dt = raw_with_cat_m[raw_with_cat_m["Downtime reason"] != 0]
+
+    df_mc = (
+        only_dt.groupby(["Machine", "Categorie"])["confessed [h]"].sum()
+        .reset_index()
+    )
+    if not df_mc.empty and df_mc["confessed [h]"].sum() > 0:
+        cat_color_map_m = (
+            raw_with_cat_m.dropna(subset=["Categorie"])
+            .drop_duplicates(subset=["Categorie"])
+            .set_index("Categorie")["ColorHEX"].to_dict()
+        )
+        machine_order = (
+            df_mc.groupby("Machine")["confessed [h]"].sum()
+            .sort_values(ascending=False).index.tolist()
+        )
+        fig_m = px.bar(
+            df_mc, x="Machine", y="confessed [h]", color="Categorie",
+            category_orders={"Machine": machine_order},
+            color_discrete_map=cat_color_map_m,
+            custom_data=["Categorie"],
+        )
+        fig_m.update_layout(height=260, margin=dict(t=10), barmode="stack",
+                             xaxis_title="", yaxis_title="Heures d'arrêt")
+        event_m = st.plotly_chart(
+            fig_m, use_container_width=True,
+            on_select="rerun", selection_mode="points", key="machine_cat_chart",
+        )
+
+        points = (event_m or {}).get("selection", {}).get("points", [])
+        if points:
+            p = points[0]
+            machine_sel = p.get("x")
+            cat_sel = None
+            if "customdata" in p and p["customdata"]:
+                cat_sel = p["customdata"][0]
+            detail = only_dt[
+                (only_dt["Machine"] == machine_sel) & (only_dt["Categorie"] == cat_sel)
+            ][["Machine", "Downtime name", "Commentaire", "confessed [h]"]]
+            st.markdown(f"**Détail — Machine `{machine_sel}` / catégorie `{cat_sel}`**")
+            if not detail.empty:
+                st.dataframe(detail.sort_values("confessed [h]", ascending=False),
+                             use_container_width=True, hide_index=True)
+            else:
+                st.caption("Aucun détail trouvé pour cette sélection.")
+        else:
+            st.caption("👆 Clique sur une barre du graphique pour afficher le détail des arrêts correspondants.")
+    else:
+        st.info("Aucun arrêt enregistré pour la sélection actuelle.")
+else:
+    st.info("Légende DT_LEGEND indisponible pour catégoriser les arrêts.")
+
+with st.expander("🔍 Voir les données détaillées filtrées"):
+    if not raw_log_f.empty:
+        st.write("**RAW_LOG**")
+        st.dataframe(raw_log_f, use_container_width=True)
+    if not summary_f.empty:
+        st.write("**SUMMARY**")
+        st.dataframe(summary_f, use_container_width=True)
+    if not dt_legend.empty:
+        st.write("**DT_LEGEND**")
+        st.dataframe(dt_legend, use_container_width=True)
