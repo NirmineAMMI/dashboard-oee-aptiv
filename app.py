@@ -445,12 +445,6 @@ st.title("📊 Dashboard OEE — Département Production")
 
 with st.sidebar:
     st.header("📁 Gestion des fichiers")
-    else:
-        st.success(f"Connecté : {st.session_state.admin_user}")
-        if st.button("Se déconnecter"):
-            st.session_state.is_admin = False
-            st.session_state.admin_user = None
-            st.rerun()
 
         st.divider()
         st.subheader("📤 Ajouter des fichiers")
