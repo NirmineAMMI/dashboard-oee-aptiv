@@ -443,8 +443,32 @@ def _list_stored_files() -> list:
 # ----------------------------------------------------------------------------
 st.title("📊 Dashboard OEE — Département Production")
 
+if "is_admin" not in st.session_state:
+    st.session_state.is_admin = False
+    st.session_state.admin_user = None
+
 with st.sidebar:
-    st.header("📁 Gestion des fichiers")
+    st.header("🔐 Espace administrateur")
+
+    if not st.session_state.is_admin:
+        with st.form("login_form"):
+            username = st.text_input("Nom d'utilisateur")
+            password = st.text_input("Mot de passe", type="password")
+            submitted = st.form_submit_button("Se connecter")
+        if submitted:
+            admins = _get_admins()
+            if username in admins and password == admins[username]:
+                st.session_state.is_admin = True
+                st.session_state.admin_user = username
+                st.rerun()
+            else:
+                st.error("Identifiants incorrects.")
+    else:
+        st.success(f"Connecté : {st.session_state.admin_user}")
+        if st.button("Se déconnecter"):
+            st.session_state.is_admin = False
+            st.session_state.admin_user = None
+            st.rerun()
 
         st.divider()
         st.subheader("📤 Ajouter des fichiers")
