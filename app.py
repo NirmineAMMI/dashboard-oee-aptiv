@@ -414,44 +414,51 @@ def _list_stored_files() -> list:
 # ----------------------------------------------------------------------------
 st.title("📊 Dashboard OEE — Département Production")
 
-# Charger automatiquement les fichiers du dossier data
-files_on_disk = _list_stored_files()
-
-if not files_on_disk:
-    st.info("📁 Aucune donnée disponible pour le moment.")
-    st.info("Placez vos fichiers Excel (.xlsx) dans le dossier 'data' pour commencer.")
-    st.stop()
-
-# Chargement des données
-with st.spinner("Chargement des données..."):
-    raw_log, summary, dt_legend, files, errors = load_all_data(files_on_disk)
-
-if errors:
-    with st.expander("⚠️ Fichiers non lus correctement"):
-        for e in errors:
-            st.write("-", e)
-
-if raw_log.empty and summary.empty:
-    st.warning("Aucune donnée exploitable trouvée pour le moment.")
-    st.stop()
-
-# ---- Filtres ----
+# ---- Barre latérale avec filtres (toujours affichée) ----
 with st.sidebar:
-    st.header("🔎 Filtres")
-    all_dates = sorted(set(raw_log.get("Date", pd.Series(dtype=object))) |
-                       set(summary.get("Date", pd.Series(dtype=object))))
-    if not all_dates:
-        st.warning("Aucune date trouvée.")
-        st.stop()
-    selected_dates = st.multiselect("Date(s)", options=all_dates, default=all_dates)
-    selected_shifts = st.multiselect("Shift(s)", options=["A", "B", "C"], default=["A", "B", "C"])
-    all_cc = sorted(summary["CC"].dropna().unique()) if "CC" in summary.columns and not summary.empty else []
-    selected_cc = st.multiselect("CC (cellule)", options=all_cc, default=all_cc)
+    st.header("📁 Gestion des données")
+    
+    # Afficher le nombre de fichiers disponibles
+    files_on_disk = _list_stored_files()
+    st.info(f"📊 {len(files_on_disk)} fichier(s) trouvé(s) dans le dossier 'data'")
     
     st.divider()
-    st.caption(f"📊 {len(files_on_disk)} fichier(s) chargé(s)")
-    st.caption(f"📅 {len(all_dates)} jour(s) de données")
+    st.header("🔎 Filtres")
+    
+    # Si des fichiers existent, afficher les filtres
+    if files_on_disk:
+        # Chargement des données
+        with st.spinner("Chargement des données..."):
+            raw_log, summary, dt_legend, files, errors = load_all_data(files_on_disk)
+        
+        if errors:
+            with st.expander("⚠️ Fichiers non lus correctement"):
+                for e in errors:
+                    st.write("-", e)
+        
+        if not raw_log.empty and not summary.empty:
+            all_dates = sorted(set(raw_log.get("Date", pd.Series(dtype=object))) |
+                               set(summary.get("Date", pd.Series(dtype=object))))
+            if all_dates:
+                selected_dates = st.multiselect("Date(s)", options=all_dates, default=all_dates)
+                selected_shifts = st.multiselect("Shift(s)", options=["A", "B", "C"], default=["A", "B", "C"])
+                all_cc = sorted(summary["CC"].dropna().unique()) if "CC" in summary.columns and not summary.empty else []
+                selected_cc = st.multiselect("CC (cellule)", options=all_cc, default=all_cc)
+                
+                st.divider()
+                st.caption(f"📅 {len(all_dates)} jour(s) de données")
+            else:
+                st.warning("Aucune date trouvée dans les données.")
+                st.stop()
+        else:
+            st.warning("Aucune donnée exploitable trouvée.")
+            st.stop()
+    else:
+        st.info("📁 Placez vos fichiers Excel (.xlsx) dans le dossier 'data'")
+        st.info("pour commencer à utiliser le dashboard.")
+        st.stop()
 
+# ---- Suite du dashboard (affiché seulement si des données sont disponibles) ----
 # Application des filtres
 summary_f = summary[
     summary["Date"].isin(selected_dates) & (summary["CC"].isin(selected_cc) if selected_cc else True)
