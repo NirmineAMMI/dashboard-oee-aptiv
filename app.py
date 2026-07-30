@@ -1,22 +1,30 @@
 """
-Dashboard OEE - Aptiv (version design amélioré)
+Dashboard OEE - Aptiv (version design amélioré + stockage persistant Supabase)
 =================================================
-Lit automatiquement tous les fichiers Excel journaliers déposés dans un dossier
-(chacun avec les onglets "DATA 1"/"DATA 2"/"DT" -- OU "SUMMARY"/"DT_LEGEND",
-les deux noms sont acceptés), calcule Availability, Performance, Quality et OEE,
-et affiche un dashboard interactif filtrable par Date, Shift (A/B/C) et CC.
+Lit automatiquement tous les fichiers Excel journaliers déposés dans un bucket
+Supabase Storage (chacun avec les onglets "DATA 1"/"DATA 2"/"DT" -- OU
+"SUMMARY"/"DT_LEGEND", les deux noms sont acceptés), calcule Availability,
+Performance, Quality et OEE, et affiche un dashboard interactif filtrable par
+Date, Shift (A/B/C) et CC.
 
 Lancer avec :  streamlit run app.py
+
+IMPORTANT — Persistance des fichiers :
+Sur Streamlit Community Cloud, le disque local est éphémère (il est effacé à
+chaque mise en veille / redéploiement). Les fichiers uploadés sont donc
+maintenant stockés dans un bucket Supabase Storage plutôt que sur le disque,
+ce qui les rend permanents. Voir les instructions de configuration fournies
+séparément (secrets.toml + requirements.txt).
 """
 
-import glob
-import os
+import io
 import re
 
 import pandas as pd  # type: ignore
 import plotly.express as px  # type: ignore
 import plotly.graph_objects as go  # type: ignore
 import streamlit as st  # type: ignore
+from supabase import create_client  # type: ignore
 
 # ----------------------------------------------------------------------------
 # Configuration générale de la page
@@ -110,8 +118,8 @@ def _parse_target_cycle(x):
 
 
 def _name_of(f) -> str:
-    """Nom du fichier, qu'il s'agisse d'un chemin (str) ou d'un fichier uploadé (UploadedFile)."""
-    return getattr(f, "name", None) or os.path.basename(str(f))
+    """Nom du fichier, qu'il s'agisse d'un chemin (str) ou d'un fichier uploadé (UploadedFile / BytesIO)."""
+    return getattr(f, "name", None) or str(f)
 
 
 def _reset(f):
@@ -303,22 +311,64 @@ def read_dt_legend_from_file(filepath) -> pd.DataFrame:
     return df
 
 
+# ----------------------------------------------------------------------------
+# Stockage persistant (Supabase Storage)
+# ----------------------------------------------------------------------------
+SUPABASE_BUCKET = "oee-files"
+
+
+@st.cache_resource
+def _get_supabase_client():
+    try:
+        url = st.secrets["supabase"]["url"]
+        key = st.secrets["supabase"]["key"]
+    except Exception:
+        st.error(
+            "Configuration Supabase manquante. Ajoute [supabase] url / key dans "
+            "les Secrets de l'app (Settings → Secrets)."
+        )
+        st.stop()
+    return create_client(url, key)
+
+
+def _list_stored_files() -> list:
+    """Liste les fichiers .xlsx présents dans le bucket Supabase (persistants)."""
+    client = _get_supabase_client()
+    try:
+        objects = client.storage.from_(SUPABASE_BUCKET).list()
+    except Exception as e:
+        st.error(f"Impossible de lister les fichiers Supabase : {e}")
+        return []
+    names = [o.get("name", "") for o in objects]
+    return sorted(n for n in names if n.lower().endswith(".xlsx") and not n.startswith("~$"))
+
+
+@st.cache_data(show_spinner=False)
+def _download_file_bytes(name: str) -> bytes:
+    """Télécharge le contenu binaire d'un fichier depuis le bucket Supabase (mis en cache)."""
+    client = _get_supabase_client()
+    return client.storage.from_(SUPABASE_BUCKET).download(name)
+
+
 @st.cache_data(show_spinner=True)
-def load_all_data(files: list):
-    """files : liste de chemins (mode dossier local) OU de fichiers uploadés (st.file_uploader)."""
-    files = [f for f in files if not _name_of(f).startswith("~$")]
+def load_all_data(file_names: list):
+    """file_names : liste de noms de fichiers stockés dans le bucket Supabase."""
+    file_names = [n for n in file_names if not n.startswith("~$")]
 
     raw_logs, summaries, errors = [], [], []
     dt_legend = pd.DataFrame()
 
-    for f in files:
+    for name in file_names:
+        f = io.BytesIO(_download_file_bytes(name))
+        f.name = name
+
         r = pd.DataFrame()
         try:
             r = read_raw_log_from_file(f)
             if not r.empty:
                 raw_logs.append(r)
         except Exception as e:
-            errors.append(f"{_name_of(f)} (journal) : {e}")
+            errors.append(f"{name} (journal) : {e}")
         try:
             s = read_summary_from_file(f)
             if not s.empty:
@@ -329,13 +379,13 @@ def load_all_data(files: list):
                     s["Date"] = inferred_date
                 summaries.append(s)
         except Exception as e:
-            errors.append(f"{_name_of(f)} (résumé) : {e}")
+            errors.append(f"{name} (résumé) : {e}")
         if dt_legend.empty:
             dt_legend = read_dt_legend_from_file(f)
 
     raw_log = pd.concat(raw_logs, ignore_index=True) if raw_logs else pd.DataFrame()
     summary = pd.concat(summaries, ignore_index=True) if summaries else pd.DataFrame()
-    return raw_log, summary, dt_legend, files, errors
+    return raw_log, summary, dt_legend, file_names, errors
 
 
 # ----------------------------------------------------------------------------
@@ -421,21 +471,12 @@ def half_donut_gauge(value_pct, title, color):
     return fig
 
 
-DATA_DIR = "data"
-os.makedirs(DATA_DIR, exist_ok=True)
-
-
 def _get_admins() -> dict:
     """Récupère les comptes admin (nom -> mot de passe) depuis les secrets Streamlit."""
     try:
         return dict(st.secrets["admins"])
     except Exception:
         return {}
-
-
-def _list_stored_files() -> list:
-    files = sorted(glob.glob(os.path.join(DATA_DIR, "*.xlsx")))
-    return [f for f in files if not os.path.basename(f).startswith("~$")]
 
 
 # ----------------------------------------------------------------------------
@@ -477,32 +518,42 @@ with st.sidebar:
             type=["xlsx"], accept_multiple_files=True, key="admin_uploader",
         )
         if new_files and st.button("Enregistrer dans le stock", use_container_width=True):
-            for f in new_files:
-                with open(os.path.join(DATA_DIR, f.name), "wb") as out:
-                    out.write(f.getbuffer())
-            st.cache_data.clear()
-            st.success(f"{len(new_files)} fichier(s) ajouté(s).")
-            st.rerun()
+            client = _get_supabase_client()
+            try:
+                for f in new_files:
+                    client.storage.from_(SUPABASE_BUCKET).upload(
+                        path=f.name,
+                        file=f.getvalue(),
+                        file_options={"upsert": "true"},
+                    )
+                st.cache_data.clear()
+                st.success(f"{len(new_files)} fichier(s) ajouté(s) de façon permanente.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Échec de l'envoi vers Supabase : {e}")
 
         st.divider()
         st.subheader("🗑️ Fichiers stockés")
-        stored = [os.path.basename(f) for f in _list_stored_files()]
+        stored = _list_stored_files()
         if stored:
             to_delete = st.selectbox("Supprimer un fichier", ["-"] + stored)
-            if to_delete != "-" and st.button(f"Confirmer la suppression"):
-                os.remove(os.path.join(DATA_DIR, to_delete))
-                st.cache_data.clear()
-                st.rerun()
+            if to_delete != "-" and st.button("Confirmer la suppression"):
+                try:
+                    _get_supabase_client().storage.from_(SUPABASE_BUCKET).remove([to_delete])
+                    st.cache_data.clear()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Échec de la suppression : {e}")
         else:
             st.caption("Aucun fichier stocké pour le moment.")
 
-files_on_disk = _list_stored_files()
+file_names_on_disk = _list_stored_files()
 
-if not files_on_disk:
+if not file_names_on_disk:
     st.info("Aucune donnée disponible pour le moment. Un administrateur doit se connecter pour ajouter des fichiers.")
     st.stop()
 
-raw_log, summary, dt_legend, files, errors = load_all_data(files_on_disk)
+raw_log, summary, dt_legend, files, errors = load_all_data(file_names_on_disk)
 
 if errors:
     with st.expander("⚠️ Fichiers non lus correctement"):
