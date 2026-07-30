@@ -18,7 +18,9 @@ séparément (secrets.toml + requirements.txt).
 """
 
 import io
+import os
 import re
+import unicodedata
 
 import pandas as pd  # type: ignore
 import plotly.express as px  # type: ignore
@@ -317,6 +319,17 @@ def read_dt_legend_from_file(filepath) -> pd.DataFrame:
 SUPABASE_BUCKET = "oee-files"
 
 
+def _sanitize_filename(name: str) -> str:
+    """Nettoie un nom de fichier pour qu'il soit accepté par Supabase Storage :
+    enlève les accents (é -> e), remplace les espaces/caractères spéciaux par '_'.
+    """
+    base, ext = os.path.splitext(name)
+    base = unicodedata.normalize("NFKD", base).encode("ascii", "ignore").decode("ascii")
+    base = re.sub(r"[^A-Za-z0-9_-]+", "_", base).strip("_")
+    ext = re.sub(r"[^A-Za-z0-9.]+", "", ext).lower()
+    return f"{base}{ext}" if base else f"fichier{ext}"
+
+
 @st.cache_resource
 def _get_supabase_client():
     try:
@@ -521,8 +534,9 @@ with st.sidebar:
             client = _get_supabase_client()
             try:
                 for f in new_files:
+                    safe_name = _sanitize_filename(f.name)
                     client.storage.from_(SUPABASE_BUCKET).upload(
-                        path=f.name,
+                        path=safe_name,
                         file=f.getvalue(),
                         file_options={"upsert": "true"},
                     )
