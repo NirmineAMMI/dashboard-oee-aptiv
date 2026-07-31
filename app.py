@@ -1,3 +1,30 @@
+"""
+Dashboard OEE - Aptiv (version design "cockpit" sombre + stockage persistant Supabase)
+=======================================================================================
+Lit automatiquement tous les fichiers Excel journaliers déposés dans un bucket
+Supabase Storage (chacun avec les onglets "DATA 1"/"DATA 2"/"DT" -- OU
+"SUMMARY"/"DT_LEGEND", les deux noms sont acceptés), calcule Availability,
+Performance, Quality et OEE, et affiche un dashboard interactif filtrable par
+Date, Shift (A/B/C) et CC.
+
+Lancer avec :  streamlit run app.py
+
+IMPORTANT — Persistance des fichiers :
+Sur Streamlit Community Cloud, le disque local est éphémère (il est effacé à
+chaque mise en veille / redéploiement). Les fichiers uploadés sont donc
+stockés dans un bucket Supabase Storage plutôt que sur le disque, ce qui les
+rend permanents. Voir les instructions de configuration fournies séparément
+(secrets.toml + requirements.txt).
+
+Design :
+--------
+Cette version reprend l'agencement d'un dashboard "cockpit" professionnel
+(cartes KPI en tête, jauges/donuts circulaires, panneau de répartition,
+mini-graphiques de tendance) afin que l'essentiel soit visible en un seul
+écran. Les analyses détaillées (Pareto des arrêts, cycle time, données
+brutes) restent disponibles dans des volets dépliables juste en dessous.
+"""
+
 import io
 import os
 import re
@@ -630,15 +657,18 @@ def render_health_block(raw_log_f: pd.DataFrame):
     html_rows = ""
     for icon, color, count, label in rows:
         pct = (count / total * 100) if total else 0
-        html_rows += f"""
-        <div class="health-row">
-            <div class="health-dot" style="background:{color}22;">{icon}</div>
-            <div>
-                <div class="health-value">{pct:.1f}<span style="font-size:13px;">%</span></div>
-                <div class="health-label">{label} · {count}/{total} machines</div>
-            </div>
-        </div>
-        """
+        # IMPORTANT : tout sur une seule ligne, sans indentation. Si on indente
+        # ces lignes avec 4+ espaces, Markdown les interprète comme un bloc de
+        # code (<pre>) au lieu de les rendre comme du HTML.
+        html_rows += (
+            f'<div class="health-row">'
+            f'<div class="health-dot" style="background:{color}22;">{icon}</div>'
+            f'<div>'
+            f'<div class="health-value">{pct:.1f}<span style="font-size:13px;">%</span></div>'
+            f'<div class="health-label">{label} · {count}/{total} machines</div>'
+            f'</div>'
+            f'</div>'
+        )
     st.markdown(f'<div class="health-card">{html_rows}</div>', unsafe_allow_html=True)
 
 
