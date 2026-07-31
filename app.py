@@ -1,30 +1,3 @@
-"""
-Dashboard OEE - Aptiv (version design "cockpit" sombre + stockage persistant Supabase)
-=======================================================================================
-Lit automatiquement tous les fichiers Excel journaliers déposés dans un bucket
-Supabase Storage (chacun avec les onglets "DATA 1"/"DATA 2"/"DT" -- OU
-"SUMMARY"/"DT_LEGEND", les deux noms sont acceptés), calcule Availability,
-Performance, Quality et OEE, et affiche un dashboard interactif filtrable par
-Date, Shift (A/B/C) et CC.
-
-Lancer avec :  streamlit run app.py
-
-IMPORTANT — Persistance des fichiers :
-Sur Streamlit Community Cloud, le disque local est éphémère (il est effacé à
-chaque mise en veille / redéploiement). Les fichiers uploadés sont donc
-stockés dans un bucket Supabase Storage plutôt que sur le disque, ce qui les
-rend permanents. Voir les instructions de configuration fournies séparément
-(secrets.toml + requirements.txt).
-
-Design :
---------
-Cette version reprend l'agencement d'un dashboard "cockpit" professionnel
-(cartes KPI en tête, jauges/donuts circulaires, panneau de répartition,
-mini-graphiques de tendance) afin que l'essentiel soit visible en un seul
-écran. Les analyses détaillées (Pareto des arrêts, cycle time, données
-brutes) restent disponibles dans des volets dépliables juste en dessous.
-"""
-
 import io
 import os
 import re
@@ -924,7 +897,7 @@ with c3:
         fig_area = go.Figure()
         fig_area.add_trace(go.Scatter(
             x=trend["Date"], y=trend["Availability"] * 100, mode="lines", fill="tozeroy",
-            line=dict(color=APTIV_BLUE, width=2.5), fillcolor=f"{APTIV_BLUE}55",
+            line=dict(color=APTIV_BLUE, width=2.5), fillcolor=_hex_to_rgba(APTIV_BLUE, 0.33),
             name="Availability", hovertemplate="%{x}<br>Availability : %{y:.1f}%<extra></extra>",
         ))
         fig_area.update_layout(yaxis=dict(range=[0, 105], ticksuffix="%"), showlegend=False)
