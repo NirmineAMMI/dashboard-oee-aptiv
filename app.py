@@ -1,30 +1,3 @@
-"""
-Dashboard OEE - Aptiv (version design "cockpit" sombre + stockage persistant Supabase)
-=======================================================================================
-Lit automatiquement tous les fichiers Excel journaliers déposés dans un bucket
-Supabase Storage (chacun avec les onglets "DATA 1"/"DATA 2"/"DT" -- OU
-"SUMMARY"/"DT_LEGEND", les deux noms sont acceptés), calcule Availability,
-Performance, Quality et OEE, et affiche un dashboard interactif filtrable par
-Date, Shift (A/B/C) et CC.
-
-Lancer avec :  streamlit run app.py
-
-IMPORTANT — Persistance des fichiers :
-Sur Streamlit Community Cloud, le disque local est éphémère (il est effacé à
-chaque mise en veille / redéploiement). Les fichiers uploadés sont donc
-stockés dans un bucket Supabase Storage plutôt que sur le disque, ce qui les
-rend permanents. Voir les instructions de configuration fournies séparément
-(secrets.toml + requirements.txt).
-
-Design :
---------
-Cette version reprend l'agencement d'un dashboard "cockpit" professionnel
-(cartes KPI en tête, jauges/donuts circulaires, panneau de répartition,
-mini-graphiques de tendance) afin que l'essentiel soit visible en un seul
-écran. Les analyses détaillées (Pareto des arrêts, cycle time, données
-brutes) restent disponibles dans des volets dépliables juste en dessous.
-"""
-
 import io
 import os
 import re
@@ -857,13 +830,48 @@ with k4:
 st.write("")
 
 # ----------------------------------------------------------------------------
-# Rangée 2 : jauges circulaires (Availability / Performance / Quality) + santé machines
+# Rangée 2 : demi-cercles (%) par catégorie d'arrêt + santé machines
+# (Availability / Performance / Quality / OEE restent uniquement en chiffres
+# dans les cartes du haut, pour éviter la double présentation.)
 # ----------------------------------------------------------------------------
-g1, g2, g3, g4 = st.columns([1, 1, 1, 1.25])
-g1.plotly_chart(donut_metric(kpis["OEE"], "OEE", ORANGE, "Objectif 85%"), use_container_width=True)
-g2.plotly_chart(gauge(kpis["Availability"], "Availability", APTIV_BLUE), use_container_width=True)
-g3.plotly_chart(gauge(kpis["Quality"], "Quality", GREEN), use_container_width=True)
-with g4:
+cat_pct_data = []
+if not raw_log_f.empty and not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
+    raw_with_cat_g = raw_log_f.merge(
+        dt_legend[["CodeDT_num", "Categorie", "ColorHEX"]],
+        left_on="Downtime reason", right_on="CodeDT_num", how="left",
+    )
+    df_cat_g = (
+        raw_with_cat_g[raw_with_cat_g["Downtime reason"] != 0]
+        .groupby("Categorie", dropna=False)["confessed [h]"].sum()
+        .reset_index().sort_values("confessed [h]", ascending=False)
+    )
+    df_cat_g["Categorie"] = df_cat_g["Categorie"].fillna("Non catégorisé")
+    total_arret_h = df_cat_g["confessed [h]"].sum()
+    if total_arret_h > 0:
+        cat_color_map_g = (
+            raw_with_cat_g.dropna(subset=["Categorie"]).drop_duplicates(subset=["Categorie"])
+            .set_index("Categorie")["ColorHEX"].to_dict()
+        )
+        # Limité aux 4 catégories les plus importantes pour garder un affichage lisible
+        for _, row in df_cat_g.head(4).iterrows():
+            cat_pct_data.append({
+                "label": row["Categorie"],
+                "pct": row["confessed [h]"] / total_arret_h,
+                "color": cat_color_map_g.get(row["Categorie"], APTIV_BLUE),
+            })
+
+n_gauges = len(cat_pct_data)
+gauge_cols = st.columns([1] * n_gauges + [1.25]) if n_gauges > 0 else st.columns([1.25])
+
+for i, cat in enumerate(cat_pct_data):
+    gauge_cols[i].plotly_chart(
+        gauge(cat["pct"], cat["label"], cat["color"]), use_container_width=True
+    )
+if not cat_pct_data:
+    with gauge_cols[0]:
+        st.info("Aucun arrêt enregistré pour la sélection actuelle.")
+
+with gauge_cols[-1]:
     render_health_block(raw_log_f)
 
 st.write("")
@@ -992,7 +1000,8 @@ else:
 # ----------------------------------------------------------------------------
 # Analyse détaillée (dépliable) : Pareto des causes + cycle time hors tolérance
 # ----------------------------------------------------------------------------
-with st.expander("🔍 Analyse détaillée des arrêts et du cycle time", expanded=False):
+st.markdown('<div class="section-title">🔍 Analyse détaillée des arrêts et du cycle time</div>', unsafe_allow_html=True)
+if True:  # section toujours visible (plus de volet repliable)
     col_pie, col_bar = st.columns(2)
 
     # NOTE IMPORTANTE :
