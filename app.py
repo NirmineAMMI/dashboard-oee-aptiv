@@ -1,6 +1,6 @@
 """
-Dashboard OEE - Aptiv (version design amélioré + stockage persistant Supabase)
-=================================================
+Dashboard OEE - Aptiv (version design "cockpit" sombre + stockage persistant Supabase)
+=======================================================================================
 Lit automatiquement tous les fichiers Excel journaliers déposés dans un bucket
 Supabase Storage (chacun avec les onglets "DATA 1"/"DATA 2"/"DT" -- OU
 "SUMMARY"/"DT_LEGEND", les deux noms sont acceptés), calcule Availability,
@@ -12,9 +12,17 @@ Lancer avec :  streamlit run app.py
 IMPORTANT — Persistance des fichiers :
 Sur Streamlit Community Cloud, le disque local est éphémère (il est effacé à
 chaque mise en veille / redéploiement). Les fichiers uploadés sont donc
-maintenant stockés dans un bucket Supabase Storage plutôt que sur le disque,
-ce qui les rend permanents. Voir les instructions de configuration fournies
-séparément (secrets.toml + requirements.txt).
+stockés dans un bucket Supabase Storage plutôt que sur le disque, ce qui les
+rend permanents. Voir les instructions de configuration fournies séparément
+(secrets.toml + requirements.txt).
+
+Design :
+--------
+Cette version reprend l'agencement d'un dashboard "cockpit" professionnel
+(cartes KPI en tête, jauges/donuts circulaires, panneau de répartition,
+mini-graphiques de tendance) afin que l'essentiel soit visible en un seul
+écran. Les analyses détaillées (Pareto des arrêts, cycle time, données
+brutes) restent disponibles dans des volets dépliables juste en dessous.
 """
 
 import io
@@ -33,22 +41,83 @@ from supabase import create_client  # type: ignore
 # ----------------------------------------------------------------------------
 st.set_page_config(page_title="Dashboard OEE - Aptiv", layout="wide", page_icon="📊")
 
-APTIV_BLUE = "#0033A0"
-APTIV_LIGHT = "#4A90D9"
-GREEN = "#2E7D32"
+# ---- Palette "cockpit" sombre ----
+BG = "#0e1330"
+CARD_BG = "#161b3d"
+CARD_BG_ALT = "#12173a"
+CARD_BORDER = "#2a3160"
+TEXT_MUTED = "#9aa4c7"
+TEXT_MUTED_2 = "#7d87ad"
+TRACK = "#232a55"
+
+APTIV_BLUE = "#4A90D9"
+APTIV_BLUE_DARK = "#0033A0"
+GREEN = "#2ECC71"
 ORANGE = "#F5A623"
-RED = "#D32F2F"
+RED = "#E74C3C"
 
 st.markdown(
-    """
+    f"""
     <style>
-    .block-container {padding-top: 1.5rem;}
-    div[data-testid="stMetric"] {
-        background-color: #F5F7FA;
-        border: 1px solid #E0E4EA;
+    .block-container {{padding-top: 1.2rem; padding-bottom: 2rem; max-width: 1500px;}}
+    #MainMenu, footer {{visibility: hidden;}}
+
+    .dash-title {{
+        font-size: 30px; font-weight: 800; color: #ffffff; letter-spacing: .3px;
+        margin-bottom: 0px;
+    }}
+    .dash-subtitle {{
+        font-size: 13px; color: {TEXT_MUTED}; margin-top: 2px; margin-bottom: 14px;
+    }}
+    .section-title {{
+        font-size: 13px; font-weight: 700; color: #ffffff; text-transform: uppercase;
+        letter-spacing: .8px; margin: 6px 0 10px 0; padding-left: 10px;
+        border-left: 3px solid {APTIV_BLUE};
+    }}
+
+    /* ---- Cartes KPI (hero) ---- */
+    .kpi-card {{
+        background: {CARD_BG}; border: 1px solid {CARD_BORDER}; border-radius: 14px;
+        padding: 16px 18px; height: 108px; display:flex; flex-direction:column; justify-content:space-between;
+    }}
+    .kpi-title {{
+        font-size: 12px; color: {TEXT_MUTED}; font-weight: 700; text-transform: uppercase; letter-spacing: .6px;
+    }}
+    .kpi-row {{display:flex; align-items:center; justify-content:space-between;}}
+    .kpi-value {{font-size: 32px; font-weight: 800; color: #ffffff; line-height: 1;}}
+    .kpi-badge {{
+        padding: 5px 11px; border-radius: 8px; font-weight: 700; font-size: 13px; white-space: nowrap;
+    }}
+    .kpi-subtitle {{font-size: 11.5px; color: {TEXT_MUTED_2};}}
+
+    /* ---- Bloc "santé machines" (façon Promoters/Passives/Detractors) ---- */
+    .health-card {{
+        background: {CARD_BG}; border: 1px solid {CARD_BORDER}; border-radius: 14px;
+        padding: 14px 18px; height: 100%;
+    }}
+    .health-row {{
+        display:flex; align-items:center; gap: 12px; padding: 9px 0;
+        border-bottom: 1px solid {TRACK};
+    }}
+    .health-row:last-child {{border-bottom:none;}}
+    .health-dot {{
+        width: 38px; height: 38px; min-width:38px; border-radius: 50%;
+        display:flex; align-items:center; justify-content:center; font-size: 18px;
+    }}
+    .health-value {{font-size: 21px; font-weight: 800; color: #ffffff; line-height:1.1;}}
+    .health-label {{font-size: 11.5px; color: {TEXT_MUTED};}}
+
+    /* ---- Cadre neutre autour d'un graphique Plotly pour l'effet "carte" ---- */
+    div[data-testid="stPlotlyChart"] {{
+        background: {CARD_BG}; border: 1px solid {CARD_BORDER}; border-radius: 14px;
+        padding: 6px 6px 0 6px;
+    }}
+    div[data-testid="stMetric"] {{
+        background-color: {CARD_BG};
+        border: 1px solid {CARD_BORDER};
         border-radius: 10px;
         padding: 12px 16px;
-    }
+    }}
     </style>
     """,
     unsafe_allow_html=True,
@@ -56,7 +125,7 @@ st.markdown(
 
 
 # ----------------------------------------------------------------------------
-# Fonctions de lecture / nettoyage des données
+# Fonctions de lecture / nettoyage des données (inchangées)
 # ----------------------------------------------------------------------------
 def _clean_columns(df: pd.DataFrame) -> pd.DataFrame:
     df.columns = [str(c).strip() for c in df.columns]
@@ -314,7 +383,7 @@ def read_dt_legend_from_file(filepath) -> pd.DataFrame:
 
 
 # ----------------------------------------------------------------------------
-# Stockage persistant (Supabase Storage)
+# Stockage persistant (Supabase Storage) - inchangé
 # ----------------------------------------------------------------------------
 SUPABASE_BUCKET = "oee-files"
 
@@ -402,7 +471,7 @@ def load_all_data(file_names: list):
 
 
 # ----------------------------------------------------------------------------
-# Mesures OEE
+# Mesures OEE (inchangé)
 # ----------------------------------------------------------------------------
 def compute_kpis(raw_log: pd.DataFrame, summary: pd.DataFrame) -> dict:
     temps_fonctionnement = raw_log["run [h]"].sum() if not raw_log.empty else 0
@@ -435,53 +504,181 @@ def fmt_pct(x):
     return f"{x * 100:.1f} %" if x is not None else "N/A"
 
 
+def status_color(value, good=0.85, mid=0.60):
+    """Vert / orange / rouge selon des seuils standards OEE."""
+    if value is None:
+        return TEXT_MUTED
+    if value >= good:
+        return GREEN
+    if value >= mid:
+        return ORANGE
+    return RED
+
+
+def status_label(value, good=0.85, mid=0.60):
+    if value is None:
+        return "N/A"
+    if value >= good:
+        return "OK"
+    if value >= mid:
+        return "Attention"
+    return "Critique"
+
+
+# ----------------------------------------------------------------------------
+# Style visuel commun pour tous les graphiques Plotly (thème sombre)
+# ----------------------------------------------------------------------------
+def style_fig(fig, height=None, show_legend=None):
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#e7ebff", size=12),
+        legend=dict(font=dict(color="#c8cfe8", size=10)),
+        margin=dict(t=36, b=10, l=10, r=10),
+    )
+    if height:
+        fig.update_layout(height=height)
+    if show_legend is not None:
+        fig.update_layout(showlegend=show_legend)
+    fig.update_xaxes(gridcolor=TRACK, zerolinecolor=TRACK)
+    fig.update_yaxes(gridcolor=TRACK, zerolinecolor=TRACK)
+    return fig
+
+
+def kpi_hero_card(title, value_str, subtitle="", badge_text=None, badge_color=GREEN):
+    badge_html = (
+        f'<div class="kpi-badge" style="background:{badge_color}22;border:1px solid {badge_color};color:{badge_color};">{badge_text}</div>'
+        if badge_text else ""
+    )
+    st.markdown(
+        f"""
+        <div class="kpi-card">
+            <div class="kpi-title">{title}</div>
+            <div class="kpi-row">
+                <div class="kpi-value">{value_str}</div>
+                {badge_html}
+            </div>
+            <div class="kpi-subtitle">{subtitle}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def donut_metric(value, title, color, center_label=""):
+    """Anneau complet façon 'CSAT' : valeur au centre, reste du cercle en gris ardoise."""
+    v = 0.0 if value is None else max(0.0, min(1.0, value)) * 100
+    remainder = 100 - v
+    fig = go.Figure(
+        go.Pie(
+            values=[v, remainder], hole=0.66, rotation=90, direction="clockwise", sort=False,
+            marker=dict(colors=[color, TRACK], line=dict(color=CARD_BG, width=2)),
+            textinfo="none", hoverinfo="skip", showlegend=False,
+        )
+    )
+    fig.update_layout(
+        height=190,
+        title=dict(text=title, x=0.5, y=0.97, font=dict(size=12, color="#c8cfe8")),
+        annotations=[
+            dict(text=f"<b>{v:.1f}%</b>", x=0.5, y=0.53, showarrow=False, font=dict(size=20, color="#ffffff")),
+            dict(text=center_label, x=0.5, y=0.40, showarrow=False, font=dict(size=10, color=TEXT_MUTED)),
+        ],
+    )
+    return style_fig(fig)
+
+
 def gauge(value, title, color):
     """Jauge circulaire style 'compteur' pour un KPI en %."""
     v = value * 100 if value is not None else 0
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=v,
-        number={"suffix": " %", "font": {"size": 22}},
-        title={"text": title, "font": {"size": 13}},
+        number={"suffix": " %", "font": {"size": 22, "color": "#ffffff"}},
+        title={"text": title, "font": {"size": 13, "color": "#c8cfe8"}},
         gauge={
-            "axis": {"range": [0, 100], "tickwidth": 1},
+            "axis": {"range": [0, 100], "tickwidth": 1, "tickcolor": TEXT_MUTED_2, "tickfont": {"color": TEXT_MUTED_2, "size": 9}},
             "bar": {"color": color, "thickness": 0.3},
-            "bgcolor": "white",
+            "bgcolor": "rgba(0,0,0,0)",
+            "borderwidth": 0,
             "steps": [
-                {"range": [0, 60], "color": "#FBE4E4"},
-                {"range": [60, 85], "color": "#FEF3D9"},
-                {"range": [85, 100], "color": "#E4F3E5"},
+                {"range": [0, 60], "color": "#3a1f2a"},
+                {"range": [60, 85], "color": "#3a3320"},
+                {"range": [85, 100], "color": "#1f3a28"},
             ],
         },
     ))
-    fig.update_layout(height=160, margin=dict(t=30, b=5, l=15, r=15))
-    return fig
+    fig.update_layout(height=190, margin=dict(t=34, b=6, l=18, r=18))
+    return style_fig(fig)
 
 
-def half_donut_gauge(value_pct, title, color):
-    """Demi-cercle (jauge en donut coupé en deux) pour représenter un % (0-100)."""
-    v = 0 if value_pct is None else max(0.0, min(100.0, value_pct))
-    remainder = 100 - v
-    fig = go.Figure(go.Pie(
-        values=[v, remainder, 100],
-        rotation=270,
-        hole=0.65,
-        direction="clockwise",
-        sort=False,
-        marker=dict(colors=[color, "#E7EAF0", "rgba(0,0,0,0)"]),
-        textinfo="none",
-        hoverinfo="skip",
-        showlegend=False,
-    ))
-    fig.update_layout(
-        height=155,
-        margin=dict(t=28, b=0, l=6, r=6),
-        title=dict(text=title, x=0.5, y=0.98, font=dict(size=11)),
-        annotations=[dict(
-            text=f"<b>{v:.1f}%</b>", x=0.5, y=0.42, showarrow=False, font=dict(size=15),
-        )],
+def render_health_block(raw_log_f: pd.DataFrame):
+    """Répartition des machines par niveau de disponibilité (façon Promoteurs/Passifs/Détracteurs)."""
+    st.markdown(
+        f"""<div class="section-title" style="margin-bottom:4px;">Santé des machines</div>""",
+        unsafe_allow_html=True,
     )
-    return fig
+    if raw_log_f.empty:
+        st.markdown(
+            f'<div class="health-card"><span style="color:{TEXT_MUTED};font-size:13px;">Pas de données pour la sélection.</span></div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    g = raw_log_f.groupby("Machine").agg(run=("run [h]", "sum"), stop=("confessed [h]", "sum"))
+    denom = g["run"] + g["stop"]
+    g = g[denom > 0].copy()
+    g["avail"] = g["run"] / (g["run"] + g["stop"])
+
+    total = len(g)
+    if total == 0:
+        st.markdown(
+            f'<div class="health-card"><span style="color:{TEXT_MUTED};font-size:13px;">Pas de données pour la sélection.</span></div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    good = int((g["avail"] >= 0.85).sum())
+    mid = int(((g["avail"] >= 0.60) & (g["avail"] < 0.85)).sum())
+    low = int((g["avail"] < 0.60).sum())
+
+    rows = [
+        ("🟢", GREEN, good, "Performantes (≥ 85%)"),
+        ("🟡", ORANGE, mid, "Moyennes (60-85%)"),
+        ("🔴", RED, low, "Critiques (< 60%)"),
+    ]
+    html_rows = ""
+    for icon, color, count, label in rows:
+        pct = (count / total * 100) if total else 0
+        html_rows += f"""
+        <div class="health-row">
+            <div class="health-dot" style="background:{color}22;">{icon}</div>
+            <div>
+                <div class="health-value">{pct:.1f}<span style="font-size:13px;">%</span></div>
+                <div class="health-label">{label} · {count}/{total} machines</div>
+            </div>
+        </div>
+        """
+    st.markdown(f'<div class="health-card">{html_rows}</div>', unsafe_allow_html=True)
+
+
+def daily_trend(raw_log_f: pd.DataFrame, summary_f: pd.DataFrame) -> pd.DataFrame:
+    """Calcule Availability / Performance / Quality / OEE jour par jour pour les graphiques de tendance."""
+    dates = set()
+    if not raw_log_f.empty:
+        dates |= set(raw_log_f["Date"])
+    if not summary_f.empty:
+        dates |= set(summary_f["Date"].dropna())
+    dates = sorted(d for d in dates if pd.notna(d))
+    rows = []
+    for d in dates:
+        rl = raw_log_f[raw_log_f["Date"] == d] if not raw_log_f.empty else pd.DataFrame()
+        sm = summary_f[summary_f["Date"] == d] if not summary_f.empty else pd.DataFrame()
+        k = compute_kpis(rl, sm)
+        rows.append({
+            "Date": d, "Availability": k["Availability"], "Performance": k["Performance"],
+            "Quality": k["Quality"], "OEE": k["OEE"],
+        })
+    return pd.DataFrame(rows)
 
 
 def _get_admins() -> dict:
@@ -495,7 +692,7 @@ def _get_admins() -> dict:
 # ----------------------------------------------------------------------------
 # Interface
 # ----------------------------------------------------------------------------
-st.title("📊 Dashboard OEE — Département Production")
+st.markdown('<div class="dash-title">📊 Dashboard OEE — Département Production</div>', unsafe_allow_html=True)
 
 if "is_admin" not in st.session_state:
     st.session_state.is_admin = False
@@ -611,250 +808,128 @@ if raw_log_f.empty and summary_f.empty:
 
 kpis = compute_kpis(raw_log_f, summary_f)
 
+date_range_txt = (
+    f"{min(selected_dates)} → {max(selected_dates)}" if len(selected_dates) > 1
+    else f"{selected_dates[0]}" if selected_dates else "—"
+)
+st.markdown(
+    f'<div class="dash-subtitle">Période : {date_range_txt} · Shift(s) : {", ".join(selected_shifts) or "—"} '
+    f'· CC : {", ".join(map(str, selected_cc)) if selected_cc else "Tous"}</div>',
+    unsafe_allow_html=True,
+)
+
 # ----------------------------------------------------------------------------
-# Rangée 1 : jauges des 4 KPI
+# Rangée 1 : cartes KPI (Availability / Performance / Quality / OEE)
 # ----------------------------------------------------------------------------
-g1, g2, g3, g4 = st.columns(4)
-g1.plotly_chart(gauge(kpis["Availability"], "Availability", APTIV_BLUE), use_container_width=True)
-g2.plotly_chart(gauge(kpis["Performance"], "Performance", APTIV_LIGHT), use_container_width=True)
+k1, k2, k3, k4 = st.columns(4)
+with k1:
+    v = kpis["Availability"]
+    kpi_hero_card("Availability", fmt_pct(v),
+                   f"Fonctionnement : {kpis['Temps de Fonctionnement (h)']:.1f} h",
+                   status_label(v), status_color(v))
+with k2:
+    v = kpis["Performance"]
+    kpi_hero_card("Performance", fmt_pct(v),
+                   "Rendement vs cadence cible",
+                   status_label(v), status_color(v))
+with k3:
+    v = kpis["Quality"]
+    kpi_hero_card("Quality", fmt_pct(v),
+                   f"Yield : {kpis['Total Yield']:.0f} · Scrap : {kpis['Total Scrap']:.0f}",
+                   status_label(v), status_color(v))
+with k4:
+    v = kpis["OEE"]
+    kpi_hero_card("OEE global", fmt_pct(v),
+                   "Objectif usine : 85 %",
+                   status_label(v), status_color(v))
+
+st.write("")
+
+# ----------------------------------------------------------------------------
+# Rangée 2 : jauges circulaires (Availability / Performance / Quality) + santé machines
+# ----------------------------------------------------------------------------
+g1, g2, g3, g4 = st.columns([1, 1, 1, 1.25])
+g1.plotly_chart(donut_metric(kpis["OEE"], "OEE", ORANGE, "Objectif 85%"), use_container_width=True)
+g2.plotly_chart(gauge(kpis["Availability"], "Availability", APTIV_BLUE), use_container_width=True)
 g3.plotly_chart(gauge(kpis["Quality"], "Quality", GREEN), use_container_width=True)
-g4.plotly_chart(gauge(kpis["OEE"], "OEE", ORANGE), use_container_width=True)
+with g4:
+    render_health_block(raw_log_f)
 
-st.divider()
-
-# ----------------------------------------------------------------------------
-# Rangée 2 : Availability par downtime code (demi-cercles)
-# ----------------------------------------------------------------------------
-st.subheader("Availability par catégorie de downtime code")
-
-denom_dispo = kpis["Temps de Fonctionnement (h)"] + kpis["Temps Arret Confesse (h)"]
-
-if not raw_log_f.empty and denom_dispo > 0 and not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
-    raw_with_cat_avail = raw_log_f.merge(
-        dt_legend[["CodeDT_num", "Categorie", "ColorHEX"]],
-        left_on="Downtime reason", right_on="CodeDT_num", how="left",
-    )
-    df_cat_avail = (
-        raw_with_cat_avail[raw_with_cat_avail["Downtime reason"] != 0]
-        .groupby("Categorie", dropna=False)["confessed [h]"].sum()
-        .reset_index()
-    )
-    df_cat_avail["Categorie"] = df_cat_avail["Categorie"].fillna("Non catégorisé")
-
-    cat_color_map_avail = (
-        raw_with_cat_avail.dropna(subset=["Categorie"])
-        .drop_duplicates(subset=["Categorie"])
-        .set_index("Categorie")["ColorHEX"].to_dict()
-    )
-    df_cat_avail["Color"] = df_cat_avail["Categorie"].map(cat_color_map_avail).fillna("#9E9E9E")
-    df_cat_avail["Pct"] = df_cat_avail["confessed [h]"] / denom_dispo * 100
-    df_cat_avail = df_cat_avail.sort_values("Pct", ascending=False)
-
-    if not df_cat_avail.empty and df_cat_avail["Pct"].sum() > 0:
-        n_par_ligne = 6
-        rows_codes = [df_cat_avail.iloc[i:i + n_par_ligne] for i in range(0, len(df_cat_avail), n_par_ligne)]
-        for chunk in rows_codes:
-            cols = st.columns(len(chunk))
-            for col, (_, row) in zip(cols, chunk.iterrows()):
-                col.plotly_chart(
-                    half_donut_gauge(row["Pct"], row["Categorie"], row["Color"]),
-                    use_container_width=True,
-                )
-    else:
-        st.info("Aucun arrêt enregistré pour la sélection actuelle.")
-else:
-    st.info("Pas assez de données (ou légende DT_LEGEND indisponible) pour ce graphique.")
-
-st.divider()
+st.write("")
 
 # ----------------------------------------------------------------------------
-# Rangée 2bis : Machines dont le cycle time dépasse l'intervalle cible
+# Rangée 3 : répartition par catégorie d'arrêt + tendances OEE / Availability
 # ----------------------------------------------------------------------------
-st.subheader("⏱️ Cycle time hors tolérance")
-if not summary_f.empty and "Average cycle (s)" in summary_f.columns:
-    cyc = summary_f.dropna(subset=["Average cycle (s)", "Target cycle (s)"]).copy()
-    cyc["Tolerance cycle (s)"] = cyc["Tolerance cycle (s)"].fillna(0)
-    cyc["Borne sup (s)"] = cyc["Target cycle (s)"] + cyc["Tolerance cycle (s)"]
-    cyc["Dépassement (s)"] = cyc["Average cycle (s)"] - cyc["Borne sup (s)"]
-    cyc_over = cyc[cyc["Dépassement (s)"] > 0].sort_values("Dépassement (s)", ascending=True)
+c1, c2, c3 = st.columns(3)
 
-    if not cyc_over.empty:
-        fig = px.bar(
-            cyc_over, x="Dépassement (s)", y="Machine", orientation="h",
-            color_discrete_sequence=[RED],
-            custom_data=["Article name", "Target cycle (s)", "Tolerance cycle (s)", "Average cycle (s)", "Dépassement (s)"],
+with c1:
+    st.markdown('<div class="section-title">Répartition par catégorie d\'arrêt</div>', unsafe_allow_html=True)
+    if not raw_log_f.empty and not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
+        raw_with_cat = raw_log_f.merge(
+            dt_legend[["CodeDT_num", "Categorie", "ColorHEX"]],
+            left_on="Downtime reason", right_on="CodeDT_num", how="left",
         )
-        fig.update_traces(
-            hovertemplate=(
-                "<b>%{y}</b><br>Article : %{customdata[0]}<br>"
-                "Cible : %{customdata[1]:.2f} s ± %{customdata[2]:.2f} s<br>"
-                "Moyenne mesurée : %{customdata[3]:.2f} s<br>"
-                "Dépassement : %{x:.2f} s<extra></extra>"
-            ),
-            texttemplate="+%{x:.2f} s", textposition="outside",
+        df_cat = (
+            raw_with_cat[raw_with_cat["Downtime reason"] != 0]
+            .groupby("Categorie", dropna=False)["confessed [h]"].sum()
+            .reset_index().sort_values("confessed [h]", ascending=False)
         )
-        fig.update_layout(height=max(220, 26 * len(cyc_over)), margin=dict(t=10),
-                           xaxis_title="Dépassement au-delà de la tolérance (s)", yaxis_title="")
-
-        cyc_chart_col, cyc_detail_col = st.columns([2, 1])
-        with cyc_chart_col:
-            event_cyc = st.plotly_chart(
-                fig, use_container_width=True,
-                on_select="rerun", selection_mode="points", key="cycle_time_chart",
+        df_cat["Categorie"] = df_cat["Categorie"].fillna("Non catégorisé")
+        if not df_cat.empty and df_cat["confessed [h]"].sum() > 0:
+            cat_color_map = (
+                raw_with_cat.dropna(subset=["Categorie"]).drop_duplicates(subset=["Categorie"])
+                .set_index("Categorie")["ColorHEX"].to_dict()
             )
-        with cyc_detail_col:
-            points_cyc = (event_cyc or {}).get("selection", {}).get("points", [])
-            if points_cyc:
-                p = points_cyc[0]
-                machine_sel_cyc = p.get("y")
-                row_sel = cyc_over[cyc_over["Machine"] == machine_sel_cyc]
-                if not row_sel.empty:
-                    row_sel = row_sel.iloc[0]
-                    st.markdown(f"**Machine `{machine_sel_cyc}`**")
-                    st.write(f"Article : {row_sel.get('Article name', 'N/A')}")
-                    st.write(f"Cible : {row_sel['Target cycle (s)']:.2f} s ± {row_sel['Tolerance cycle (s)']:.2f} s")
-                    st.write(f"Moyenne mesurée : {row_sel['Average cycle (s)']:.2f} s")
-                    st.write(f"Dépassement : +{row_sel['Dépassement (s)']:.2f} s")
-                else:
-                    st.caption("Aucun détail trouvé pour cette sélection.")
-            else:
-                st.caption("👆 Clique sur une barre pour voir le détail ici.")
-    else:
-        st.info("Aucune machine ne dépasse son intervalle de cycle time cible pour la sélection actuelle.")
-else:
-    st.info("Colonnes de temps de cycle non disponibles dans les fichiers chargés.")
-
-st.divider()
-
-# ----------------------------------------------------------------------------
-# Rangée 3 : répartition des arrêts (donut par cause) + top causes (barres)
-# ----------------------------------------------------------------------------
-st.subheader("📉 Analyse des temps d'arrêt")
-
-# --- Nouveau donut : répartition par CODE d'arrêt (catégorie : Prod/Mnt/MG/TR/MPC/Qlt/ME/HR...) ---
-st.markdown("**Répartition par code d'arrêt (catégorie)**")
-if not raw_log_f.empty and not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
-    raw_with_cat = raw_log_f.merge(
-        dt_legend[["CodeDT_num", "Categorie", "ColorHEX"]],
-        left_on="Downtime reason", right_on="CodeDT_num", how="left",
-    )
-    df_cat = (
-        raw_with_cat[raw_with_cat["Downtime reason"] != 0]
-        .groupby("Categorie", dropna=False)["confessed [h]"].sum()
-        .reset_index()
-        .sort_values("confessed [h]", ascending=False)
-    )
-    df_cat["Categorie"] = df_cat["Categorie"].fillna("Non catégorisé")
-    if not df_cat.empty and df_cat["confessed [h]"].sum() > 0:
-        # une couleur représentative par catégorie (même couleur pour tous les codes d'une catégorie)
-        cat_color_map = (
-            raw_with_cat.dropna(subset=["Categorie"])
-            .drop_duplicates(subset=["Categorie"])
-            .set_index("Categorie")["ColorHEX"].to_dict()
-        )
-        colors = [cat_color_map.get(c, "#9E9E9E") for c in df_cat["Categorie"]]
-        fig_cat = go.Figure(go.Pie(
-            labels=df_cat["Categorie"], values=df_cat["confessed [h]"], hole=0.45,
-            marker=dict(colors=colors),
-            textinfo="percent", hovertemplate="<b>%{label}</b><br>%{value:.2f} h<extra></extra>",
-        ))
-        fig_cat.update_layout(height=260, margin=dict(t=10, b=10), legend=dict(font=dict(size=9)))
-        st.plotly_chart(fig_cat, use_container_width=True)
-    else:
-        st.info("Aucun arrêt enregistré pour la sélection actuelle.")
-else:
-    st.info("Légende DT_LEGEND indisponible pour catégoriser les arrêts.")
-
-st.divider()
-col_pie, col_bar = st.columns(2)
-
-# NOTE IMPORTANTE :
-# - Dans "DATA 1", "Downtime reason" contient le CODE (0, 1, 4, ... 31) et
-#   "Downtime name" contient le TEXTE de la cause.
-# - Dans "DT_LEGEND", c'est l'inverse : "CodeDT" (colonne "Downtime name" du fichier)
-#   contient le code, et "Libelle" (colonne "Downtime reason" du fichier) contient le texte.
-# On fusionne donc désormais sur le CODE numérique normalisé (CodeDT_num vs Downtime reason),
-# et non plus sur le texte, pour que ColorHEX se rattache correctement à chaque cause.
-
-with col_pie:
-    st.markdown("**Répartition par cause**")
-    if not raw_log_f.empty:
-        df_dt = (
-            raw_log_f[raw_log_f["Downtime reason"] != 0]
-            .groupby("Downtime reason")
-            .agg(**{
-                "confessed [h]": ("confessed [h]", "sum"),
-                "Downtime name": ("Downtime name", "first"),
-            })
-            .reset_index()
-            .sort_values("confessed [h]", ascending=False)
-        )
-        if not df_dt.empty and df_dt["confessed [h]"].sum() > 0:
-            if not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
-                df_dt = df_dt.merge(
-                    dt_legend[["CodeDT_num", "Libelle", "ColorHEX"]],
-                    left_on="Downtime reason", right_on="CodeDT_num", how="left",
-                )
-                df_dt["Label"] = df_dt["Libelle"].fillna(df_dt["Downtime name"])
-                colors = ["#9E9E9E" if pd.isna(c) else c for c in df_dt["ColorHEX"]]
-            else:
-                df_dt["Label"] = df_dt["Downtime name"]
-                colors = None
-            fig = go.Figure(go.Pie(
-                labels=df_dt["Label"], values=df_dt["confessed [h]"], hole=0.45,
-                marker=dict(colors=colors) if colors else {},
+            colors = [cat_color_map.get(cat, "#9E9E9E") for cat in df_cat["Categorie"]]
+            fig_cat = go.Figure(go.Pie(
+                labels=df_cat["Categorie"], values=df_cat["confessed [h]"], hole=0.5,
+                marker=dict(colors=colors, line=dict(color=CARD_BG, width=2)),
                 textinfo="percent", hovertemplate="<b>%{label}</b><br>%{value:.2f} h<extra></extra>",
             ))
-            fig.update_layout(height=280, margin=dict(t=10, b=10),
-                               legend=dict(font=dict(size=9)))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(style_fig(fig_cat, height=260), use_container_width=True)
         else:
             st.info("Aucun arrêt enregistré pour la sélection actuelle.")
     else:
-        st.info("Pas de données disponibles.")
+        st.info("Légende DT_LEGEND indisponible pour catégoriser les arrêts.")
 
-with col_bar:
-    st.markdown("**Top 10 des causes (heures)**")
-    if not raw_log_f.empty:
-        df_c = (
-            raw_log_f[raw_log_f["Downtime reason"] != 0]
-            .groupby("Downtime reason")
-            .agg(**{
-                "confessed [h]": ("confessed [h]", "sum"),
-                "Downtime name": ("Downtime name", "first"),
-            })
-            .reset_index()
-            .sort_values("confessed [h]", ascending=True)
-            .tail(10)
-        )
-        if not df_c.empty and df_c["confessed [h]"].sum() > 0:
-            if not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
-                df_c = df_c.merge(
-                    dt_legend[["CodeDT_num", "Libelle", "ColorHEX"]],
-                    left_on="Downtime reason", right_on="CodeDT_num", how="left",
-                )
-                df_c["Label"] = df_c["Libelle"].fillna(df_c["Downtime name"])
-                colors_map = {row["Label"]: (row["ColorHEX"] if pd.notna(row["ColorHEX"]) else "#9E9E9E")
-                              for _, row in df_c.iterrows()}
-            else:
-                df_c["Label"] = df_c["Downtime name"]
-                colors_map = None
-            fig = px.bar(
-                df_c, x="confessed [h]", y="Label", orientation="h",
-                color="Label" if colors_map else None,
-                color_discrete_map=colors_map if colors_map else None,
-                color_discrete_sequence=[RED] if not colors_map else None,
-            )
-            fig.update_layout(height=280, margin=dict(t=10, b=10), showlegend=False,
-                              xaxis_title="Heures d'arrêt", yaxis_title="")
-            fig.update_traces(texttemplate="%{x:.2f} h", textposition="outside")
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Aucun arrêt enregistré pour la sélection actuelle.")
+trend = daily_trend(raw_log_f, summary_f)
+
+with c2:
+    st.markdown('<div class="section-title">Évolution de l\'OEE</div>', unsafe_allow_html=True)
+    if not trend.empty:
+        fig_line = go.Figure()
+        fig_line.add_trace(go.Scatter(
+            x=trend["Date"], y=trend["OEE"] * 100, mode="lines+markers",
+            line=dict(color=ORANGE, width=3), marker=dict(size=6),
+            name="OEE", hovertemplate="%{x}<br>OEE : %{y:.1f}%<extra></extra>",
+        ))
+        fig_line.add_hline(y=85, line_dash="dot", line_color=TEXT_MUTED_2, annotation_text="Objectif 85%",
+                            annotation_font_color=TEXT_MUTED_2, annotation_font_size=10)
+        fig_line.update_layout(yaxis=dict(range=[0, 105], ticksuffix="%"), showlegend=False)
+        st.plotly_chart(style_fig(fig_line, height=260), use_container_width=True)
     else:
-        st.info("Pas de données disponibles.")
+        st.info("Pas assez de données pour tracer une tendance.")
 
-st.subheader("Code d'arrêt (catégorie) par machine")
+with c3:
+    st.markdown('<div class="section-title">Évolution de l\'Availability</div>', unsafe_allow_html=True)
+    if not trend.empty:
+        fig_area = go.Figure()
+        fig_area.add_trace(go.Scatter(
+            x=trend["Date"], y=trend["Availability"] * 100, mode="lines", fill="tozeroy",
+            line=dict(color=APTIV_BLUE, width=2.5), fillcolor=f"{APTIV_BLUE}55",
+            name="Availability", hovertemplate="%{x}<br>Availability : %{y:.1f}%<extra></extra>",
+        ))
+        fig_area.update_layout(yaxis=dict(range=[0, 105], ticksuffix="%"), showlegend=False)
+        st.plotly_chart(style_fig(fig_area, height=260), use_container_width=True)
+    else:
+        st.info("Pas assez de données pour tracer une tendance.")
+
+st.write("")
+
+# ----------------------------------------------------------------------------
+# Rangée 4 : répartition des arrêts par machine (stacked bar)
+# ----------------------------------------------------------------------------
+st.markdown('<div class="section-title">Code d\'arrêt (catégorie) par machine</div>', unsafe_allow_html=True)
 if not raw_log_f.empty and not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
     raw_with_cat_m = raw_log_f.merge(
         dt_legend[["CodeDT_num", "Categorie", "ColorHEX"]],
@@ -863,30 +938,22 @@ if not raw_log_f.empty and not dt_legend.empty and "CodeDT_num" in dt_legend.col
     raw_with_cat_m["Categorie"] = raw_with_cat_m["Categorie"].fillna("Non catégorisé")
     only_dt = raw_with_cat_m[raw_with_cat_m["Downtime reason"] != 0]
 
-    df_mc = (
-        only_dt.groupby(["Machine", "Categorie"])["confessed [h]"].sum()
-        .reset_index()
-    )
+    df_mc = only_dt.groupby(["Machine", "Categorie"])["confessed [h]"].sum().reset_index()
     if not df_mc.empty and df_mc["confessed [h]"].sum() > 0:
         cat_color_map_m = (
-            raw_with_cat_m.dropna(subset=["Categorie"])
-            .drop_duplicates(subset=["Categorie"])
+            raw_with_cat_m.dropna(subset=["Categorie"]).drop_duplicates(subset=["Categorie"])
             .set_index("Categorie")["ColorHEX"].to_dict()
         )
-        machine_order = (
-            df_mc.groupby("Machine")["confessed [h]"].sum()
-            .sort_values(ascending=False).index.tolist()
-        )
+        machine_order = df_mc.groupby("Machine")["confessed [h]"].sum().sort_values(ascending=False).index.tolist()
         fig_m = px.bar(
             df_mc, x="Machine", y="confessed [h]", color="Categorie",
             category_orders={"Machine": machine_order},
             color_discrete_map=cat_color_map_m,
             custom_data=["Categorie"],
         )
-        fig_m.update_layout(height=260, margin=dict(t=10), barmode="stack",
-                             xaxis_title="", yaxis_title="Heures d'arrêt")
+        fig_m.update_layout(barmode="stack", xaxis_title="", yaxis_title="Heures d'arrêt")
         event_m = st.plotly_chart(
-            fig_m, use_container_width=True,
+            style_fig(fig_m, height=280), use_container_width=True,
             on_select="rerun", selection_mode="points", key="machine_cat_chart",
         )
 
@@ -894,9 +961,7 @@ if not raw_log_f.empty and not dt_legend.empty and "CodeDT_num" in dt_legend.col
         if points:
             p = points[0]
             machine_sel = p.get("x")
-            cat_sel = None
-            if "customdata" in p and p["customdata"]:
-                cat_sel = p["customdata"][0]
+            cat_sel = p["customdata"][0] if p.get("customdata") else None
             detail = only_dt[
                 (only_dt["Machine"] == machine_sel) & (only_dt["Categorie"] == cat_sel)
             ][["Machine", "Downtime name", "Commentaire", "confessed [h]"]]
@@ -913,7 +978,140 @@ if not raw_log_f.empty and not dt_legend.empty and "CodeDT_num" in dt_legend.col
 else:
     st.info("Légende DT_LEGEND indisponible pour catégoriser les arrêts.")
 
-with st.expander("🔍 Voir les données détaillées filtrées"):
+# ----------------------------------------------------------------------------
+# Analyse détaillée (dépliable) : Pareto des causes + cycle time hors tolérance
+# ----------------------------------------------------------------------------
+with st.expander("🔍 Analyse détaillée des arrêts et du cycle time", expanded=False):
+    col_pie, col_bar = st.columns(2)
+
+    # NOTE IMPORTANTE :
+    # - Dans "DATA 1", "Downtime reason" contient le CODE (0, 1, 4, ... 31) et
+    #   "Downtime name" contient le TEXTE de la cause.
+    # - Dans "DT_LEGEND", c'est l'inverse : "CodeDT" (colonne "Downtime name" du fichier)
+    #   contient le code, et "Libelle" (colonne "Downtime reason" du fichier) contient le texte.
+    # On fusionne donc sur le CODE numérique normalisé (CodeDT_num vs Downtime reason).
+
+    with col_pie:
+        st.markdown("**Répartition par cause**")
+        if not raw_log_f.empty:
+            df_dt = (
+                raw_log_f[raw_log_f["Downtime reason"] != 0]
+                .groupby("Downtime reason")
+                .agg(**{"confessed [h]": ("confessed [h]", "sum"), "Downtime name": ("Downtime name", "first")})
+                .reset_index().sort_values("confessed [h]", ascending=False)
+            )
+            if not df_dt.empty and df_dt["confessed [h]"].sum() > 0:
+                if not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
+                    df_dt = df_dt.merge(
+                        dt_legend[["CodeDT_num", "Libelle", "ColorHEX"]],
+                        left_on="Downtime reason", right_on="CodeDT_num", how="left",
+                    )
+                    df_dt["Label"] = df_dt["Libelle"].fillna(df_dt["Downtime name"])
+                    colors = ["#9E9E9E" if pd.isna(c) else c for c in df_dt["ColorHEX"]]
+                else:
+                    df_dt["Label"] = df_dt["Downtime name"]
+                    colors = None
+                fig = go.Figure(go.Pie(
+                    labels=df_dt["Label"], values=df_dt["confessed [h]"], hole=0.45,
+                    marker=dict(colors=colors, line=dict(color=CARD_BG, width=2)) if colors else {},
+                    textinfo="percent", hovertemplate="<b>%{label}</b><br>%{value:.2f} h<extra></extra>",
+                ))
+                st.plotly_chart(style_fig(fig, height=280), use_container_width=True)
+            else:
+                st.info("Aucun arrêt enregistré pour la sélection actuelle.")
+        else:
+            st.info("Pas de données disponibles.")
+
+    with col_bar:
+        st.markdown("**Top 10 des causes (heures)**")
+        if not raw_log_f.empty:
+            df_c = (
+                raw_log_f[raw_log_f["Downtime reason"] != 0]
+                .groupby("Downtime reason")
+                .agg(**{"confessed [h]": ("confessed [h]", "sum"), "Downtime name": ("Downtime name", "first")})
+                .reset_index().sort_values("confessed [h]", ascending=True).tail(10)
+            )
+            if not df_c.empty and df_c["confessed [h]"].sum() > 0:
+                if not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
+                    df_c = df_c.merge(
+                        dt_legend[["CodeDT_num", "Libelle", "ColorHEX"]],
+                        left_on="Downtime reason", right_on="CodeDT_num", how="left",
+                    )
+                    df_c["Label"] = df_c["Libelle"].fillna(df_c["Downtime name"])
+                    colors_map = {row["Label"]: (row["ColorHEX"] if pd.notna(row["ColorHEX"]) else "#9E9E9E")
+                                  for _, row in df_c.iterrows()}
+                else:
+                    df_c["Label"] = df_c["Downtime name"]
+                    colors_map = None
+                fig = px.bar(
+                    df_c, x="confessed [h]", y="Label", orientation="h",
+                    color="Label" if colors_map else None,
+                    color_discrete_map=colors_map if colors_map else None,
+                    color_discrete_sequence=[RED] if not colors_map else None,
+                )
+                fig.update_layout(showlegend=False, xaxis_title="Heures d'arrêt", yaxis_title="")
+                fig.update_traces(texttemplate="%{x:.2f} h", textposition="outside")
+                st.plotly_chart(style_fig(fig, height=280), use_container_width=True)
+            else:
+                st.info("Aucun arrêt enregistré pour la sélection actuelle.")
+        else:
+            st.info("Pas de données disponibles.")
+
+    st.markdown("---")
+    st.markdown("**⏱️ Cycle time hors tolérance**")
+    if not summary_f.empty and "Average cycle (s)" in summary_f.columns:
+        cyc = summary_f.dropna(subset=["Average cycle (s)", "Target cycle (s)"]).copy()
+        cyc["Tolerance cycle (s)"] = cyc["Tolerance cycle (s)"].fillna(0)
+        cyc["Borne sup (s)"] = cyc["Target cycle (s)"] + cyc["Tolerance cycle (s)"]
+        cyc["Dépassement (s)"] = cyc["Average cycle (s)"] - cyc["Borne sup (s)"]
+        cyc_over = cyc[cyc["Dépassement (s)"] > 0].sort_values("Dépassement (s)", ascending=True)
+
+        if not cyc_over.empty:
+            fig = px.bar(
+                cyc_over, x="Dépassement (s)", y="Machine", orientation="h",
+                color_discrete_sequence=[RED],
+                custom_data=["Article name", "Target cycle (s)", "Tolerance cycle (s)", "Average cycle (s)", "Dépassement (s)"],
+            )
+            fig.update_traces(
+                hovertemplate=(
+                    "<b>%{y}</b><br>Article : %{customdata[0]}<br>"
+                    "Cible : %{customdata[1]:.2f} s ± %{customdata[2]:.2f} s<br>"
+                    "Moyenne mesurée : %{customdata[3]:.2f} s<br>"
+                    "Dépassement : %{x:.2f} s<extra></extra>"
+                ),
+                texttemplate="+%{x:.2f} s", textposition="outside",
+            )
+            fig.update_layout(xaxis_title="Dépassement au-delà de la tolérance (s)", yaxis_title="")
+
+            cyc_chart_col, cyc_detail_col = st.columns([2, 1])
+            with cyc_chart_col:
+                event_cyc = st.plotly_chart(
+                    style_fig(fig, height=max(220, 26 * len(cyc_over))), use_container_width=True,
+                    on_select="rerun", selection_mode="points", key="cycle_time_chart",
+                )
+            with cyc_detail_col:
+                points_cyc = (event_cyc or {}).get("selection", {}).get("points", [])
+                if points_cyc:
+                    p = points_cyc[0]
+                    machine_sel_cyc = p.get("y")
+                    row_sel = cyc_over[cyc_over["Machine"] == machine_sel_cyc]
+                    if not row_sel.empty:
+                        row_sel = row_sel.iloc[0]
+                        st.markdown(f"**Machine `{machine_sel_cyc}`**")
+                        st.write(f"Article : {row_sel.get('Article name', 'N/A')}")
+                        st.write(f"Cible : {row_sel['Target cycle (s)']:.2f} s ± {row_sel['Tolerance cycle (s)']:.2f} s")
+                        st.write(f"Moyenne mesurée : {row_sel['Average cycle (s)']:.2f} s")
+                        st.write(f"Dépassement : +{row_sel['Dépassement (s)']:.2f} s")
+                    else:
+                        st.caption("Aucun détail trouvé pour cette sélection.")
+                else:
+                    st.caption("👆 Clique sur une barre pour voir le détail ici.")
+        else:
+            st.info("Aucune machine ne dépasse son intervalle de cycle time cible pour la sélection actuelle.")
+    else:
+        st.info("Colonnes de temps de cycle non disponibles dans les fichiers chargés.")
+
+with st.expander("📄 Voir les données détaillées filtrées"):
     if not raw_log_f.empty:
         st.write("**RAW_LOG**")
         st.dataframe(raw_log_f, use_container_width=True)
