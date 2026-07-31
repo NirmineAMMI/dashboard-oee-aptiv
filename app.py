@@ -32,8 +32,12 @@ RED = "#E74C3C"
 st.markdown(
     f"""
     <style>
-    .block-container {{padding-top: 1.2rem; padding-bottom: 2rem; max-width: 1500px;}}
+    .block-container {{padding-top: 3.2rem; padding-bottom: 2rem; max-width: 1500px;}}
     #MainMenu, footer {{visibility: hidden;}}
+    header[data-testid="stHeader"] {{
+        background: transparent;
+        height: 2.5rem;
+    }}
 
     .dash-title {{
         font-size: 30px; font-weight: 800; color: #ffffff; letter-spacing: .3px;
@@ -905,43 +909,77 @@ with c1:
                 marker=dict(colors=colors, line=dict(color=CARD_BG, width=2)),
                 textinfo="percent", hovertemplate="<b>%{label}</b><br>%{value:.2f} h<extra></extra>",
             ))
-            st.plotly_chart(style_fig(fig_cat, height=260), use_container_width=True)
+            st.plotly_chart(style_fig(fig_cat, height=240, show_legend=False), use_container_width=True)
         else:
             st.info("Aucun arrêt enregistré pour la sélection actuelle.")
     else:
         st.info("Légende DT_LEGEND indisponible pour catégoriser les arrêts.")
 
-trend = daily_trend(raw_log_f, summary_f)
-
 with c2:
-    st.markdown('<div class="section-title">Évolution de l\'OEE</div>', unsafe_allow_html=True)
-    if not trend.empty:
-        fig_line = go.Figure()
-        fig_line.add_trace(go.Scatter(
-            x=trend["Date"], y=trend["OEE"] * 100, mode="lines+markers",
-            line=dict(color=ORANGE, width=3), marker=dict(size=6),
-            name="OEE", hovertemplate="%{x}<br>OEE : %{y:.1f}%<extra></extra>",
-        ))
-        fig_line.add_hline(y=85, line_dash="dot", line_color=TEXT_MUTED_2, annotation_text="Objectif 85%",
-                            annotation_font_color=TEXT_MUTED_2, annotation_font_size=10)
-        fig_line.update_layout(yaxis=dict(range=[0, 105], ticksuffix="%"), showlegend=False)
-        st.plotly_chart(style_fig(fig_line, height=260), use_container_width=True)
+    st.markdown('<div class="section-title">Répartition par cause</div>', unsafe_allow_html=True)
+    if not raw_log_f.empty:
+        df_dt_top = (
+            raw_log_f[raw_log_f["Downtime reason"] != 0]
+            .groupby("Downtime reason")
+            .agg(**{"confessed [h]": ("confessed [h]", "sum"), "Downtime name": ("Downtime name", "first")})
+            .reset_index().sort_values("confessed [h]", ascending=False)
+        )
+        if not df_dt_top.empty and df_dt_top["confessed [h]"].sum() > 0:
+            if not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
+                df_dt_top = df_dt_top.merge(
+                    dt_legend[["CodeDT_num", "Libelle", "ColorHEX"]],
+                    left_on="Downtime reason", right_on="CodeDT_num", how="left",
+                )
+                df_dt_top["Label"] = df_dt_top["Libelle"].fillna(df_dt_top["Downtime name"])
+                colors_cause = ["#9E9E9E" if pd.isna(c) else c for c in df_dt_top["ColorHEX"]]
+            else:
+                df_dt_top["Label"] = df_dt_top["Downtime name"]
+                colors_cause = None
+            fig_cause = go.Figure(go.Pie(
+                labels=df_dt_top["Label"], values=df_dt_top["confessed [h]"], hole=0.45,
+                marker=dict(colors=colors_cause, line=dict(color=CARD_BG, width=2)) if colors_cause else {},
+                textinfo="percent", hovertemplate="<b>%{label}</b><br>%{value:.2f} h<extra></extra>",
+            ))
+            st.plotly_chart(style_fig(fig_cause, height=240, show_legend=False), use_container_width=True)
+        else:
+            st.info("Aucun arrêt enregistré pour la sélection actuelle.")
     else:
-        st.info("Pas assez de données pour tracer une tendance.")
+        st.info("Pas de données disponibles.")
 
 with c3:
-    st.markdown('<div class="section-title">Évolution de l\'Availability</div>', unsafe_allow_html=True)
-    if not trend.empty:
-        fig_area = go.Figure()
-        fig_area.add_trace(go.Scatter(
-            x=trend["Date"], y=trend["Availability"] * 100, mode="lines", fill="tozeroy",
-            line=dict(color=APTIV_BLUE, width=2.5), fillcolor=_hex_to_rgba(APTIV_BLUE, 0.33),
-            name="Availability", hovertemplate="%{x}<br>Availability : %{y:.1f}%<extra></extra>",
-        ))
-        fig_area.update_layout(yaxis=dict(range=[0, 105], ticksuffix="%"), showlegend=False)
-        st.plotly_chart(style_fig(fig_area, height=260), use_container_width=True)
+    st.markdown('<div class="section-title">Top 10 des causes (heures)</div>', unsafe_allow_html=True)
+    if not raw_log_f.empty:
+        df_c_top = (
+            raw_log_f[raw_log_f["Downtime reason"] != 0]
+            .groupby("Downtime reason")
+            .agg(**{"confessed [h]": ("confessed [h]", "sum"), "Downtime name": ("Downtime name", "first")})
+            .reset_index().sort_values("confessed [h]", ascending=True).tail(10)
+        )
+        if not df_c_top.empty and df_c_top["confessed [h]"].sum() > 0:
+            if not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
+                df_c_top = df_c_top.merge(
+                    dt_legend[["CodeDT_num", "Libelle", "ColorHEX"]],
+                    left_on="Downtime reason", right_on="CodeDT_num", how="left",
+                )
+                df_c_top["Label"] = df_c_top["Libelle"].fillna(df_c_top["Downtime name"])
+                colors_map_top = {row["Label"]: (row["ColorHEX"] if pd.notna(row["ColorHEX"]) else "#9E9E9E")
+                                   for _, row in df_c_top.iterrows()}
+            else:
+                df_c_top["Label"] = df_c_top["Downtime name"]
+                colors_map_top = None
+            fig_top = px.bar(
+                df_c_top, x="confessed [h]", y="Label", orientation="h",
+                color="Label" if colors_map_top else None,
+                color_discrete_map=colors_map_top if colors_map_top else None,
+                color_discrete_sequence=[RED] if not colors_map_top else None,
+            )
+            fig_top.update_layout(showlegend=False, xaxis_title="Heures d'arrêt", yaxis_title="")
+            fig_top.update_traces(texttemplate="%{x:.2f} h", textposition="outside")
+            st.plotly_chart(style_fig(fig_top, height=240), use_container_width=True)
+        else:
+            st.info("Aucun arrêt enregistré pour la sélection actuelle.")
     else:
-        st.info("Pas assez de données pour tracer une tendance.")
+        st.info("Pas de données disponibles.")
 
 st.write("")
 
@@ -1000,84 +1038,8 @@ else:
 # ----------------------------------------------------------------------------
 # Analyse détaillée (dépliable) : Pareto des causes + cycle time hors tolérance
 # ----------------------------------------------------------------------------
-st.markdown('<div class="section-title">🔍 Analyse détaillée des arrêts et du cycle time</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-title">⏱️ Cycle time hors tolérance</div>', unsafe_allow_html=True)
 if True:  # section toujours visible (plus de volet repliable)
-    col_pie, col_bar = st.columns(2)
-
-    # NOTE IMPORTANTE :
-    # - Dans "DATA 1", "Downtime reason" contient le CODE (0, 1, 4, ... 31) et
-    #   "Downtime name" contient le TEXTE de la cause.
-    # - Dans "DT_LEGEND", c'est l'inverse : "CodeDT" (colonne "Downtime name" du fichier)
-    #   contient le code, et "Libelle" (colonne "Downtime reason" du fichier) contient le texte.
-    # On fusionne donc sur le CODE numérique normalisé (CodeDT_num vs Downtime reason).
-
-    with col_pie:
-        st.markdown("**Répartition par cause**")
-        if not raw_log_f.empty:
-            df_dt = (
-                raw_log_f[raw_log_f["Downtime reason"] != 0]
-                .groupby("Downtime reason")
-                .agg(**{"confessed [h]": ("confessed [h]", "sum"), "Downtime name": ("Downtime name", "first")})
-                .reset_index().sort_values("confessed [h]", ascending=False)
-            )
-            if not df_dt.empty and df_dt["confessed [h]"].sum() > 0:
-                if not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
-                    df_dt = df_dt.merge(
-                        dt_legend[["CodeDT_num", "Libelle", "ColorHEX"]],
-                        left_on="Downtime reason", right_on="CodeDT_num", how="left",
-                    )
-                    df_dt["Label"] = df_dt["Libelle"].fillna(df_dt["Downtime name"])
-                    colors = ["#9E9E9E" if pd.isna(c) else c for c in df_dt["ColorHEX"]]
-                else:
-                    df_dt["Label"] = df_dt["Downtime name"]
-                    colors = None
-                fig = go.Figure(go.Pie(
-                    labels=df_dt["Label"], values=df_dt["confessed [h]"], hole=0.45,
-                    marker=dict(colors=colors, line=dict(color=CARD_BG, width=2)) if colors else {},
-                    textinfo="percent", hovertemplate="<b>%{label}</b><br>%{value:.2f} h<extra></extra>",
-                ))
-                st.plotly_chart(style_fig(fig, height=280), use_container_width=True)
-            else:
-                st.info("Aucun arrêt enregistré pour la sélection actuelle.")
-        else:
-            st.info("Pas de données disponibles.")
-
-    with col_bar:
-        st.markdown("**Top 10 des causes (heures)**")
-        if not raw_log_f.empty:
-            df_c = (
-                raw_log_f[raw_log_f["Downtime reason"] != 0]
-                .groupby("Downtime reason")
-                .agg(**{"confessed [h]": ("confessed [h]", "sum"), "Downtime name": ("Downtime name", "first")})
-                .reset_index().sort_values("confessed [h]", ascending=True).tail(10)
-            )
-            if not df_c.empty and df_c["confessed [h]"].sum() > 0:
-                if not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
-                    df_c = df_c.merge(
-                        dt_legend[["CodeDT_num", "Libelle", "ColorHEX"]],
-                        left_on="Downtime reason", right_on="CodeDT_num", how="left",
-                    )
-                    df_c["Label"] = df_c["Libelle"].fillna(df_c["Downtime name"])
-                    colors_map = {row["Label"]: (row["ColorHEX"] if pd.notna(row["ColorHEX"]) else "#9E9E9E")
-                                  for _, row in df_c.iterrows()}
-                else:
-                    df_c["Label"] = df_c["Downtime name"]
-                    colors_map = None
-                fig = px.bar(
-                    df_c, x="confessed [h]", y="Label", orientation="h",
-                    color="Label" if colors_map else None,
-                    color_discrete_map=colors_map if colors_map else None,
-                    color_discrete_sequence=[RED] if not colors_map else None,
-                )
-                fig.update_layout(showlegend=False, xaxis_title="Heures d'arrêt", yaxis_title="")
-                fig.update_traces(texttemplate="%{x:.2f} h", textposition="outside")
-                st.plotly_chart(style_fig(fig, height=280), use_container_width=True)
-            else:
-                st.info("Aucun arrêt enregistré pour la sélection actuelle.")
-        else:
-            st.info("Pas de données disponibles.")
-
-    st.markdown("---")
     st.markdown("**⏱️ Cycle time hors tolérance**")
     if not summary_f.empty and "Average cycle (s)" in summary_f.columns:
         cyc = summary_f.dropna(subset=["Average cycle (s)", "Target cycle (s)"]).copy()
