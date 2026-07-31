@@ -12,7 +12,7 @@ from supabase import create_client  # type: ignore
 # ----------------------------------------------------------------------------
 # Configuration générale de la page
 # ----------------------------------------------------------------------------
-st.set_page_config(page_title="Dashboard OEE - Aptiv", layout="wide", page_icon="📊")
+st.set_page_config(page_title="Dashboard OEE - Aptiv", layout="wide", page_icon="📈")
 
 # ---- Palette "cockpit" sombre ----
 BG = "#0e1330"
