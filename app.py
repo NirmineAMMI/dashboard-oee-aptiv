@@ -1,5 +1,5 @@
 """
-Dashboard OEE - Aptiv (version design pro + Mode Grand Écran + stockage persistant Supabase)
+Dashboard OEE - Aptiv (version design amélioré + stockage persistant Supabase)
 =================================================
 Lit automatiquement tous les fichiers Excel journaliers déposés dans un bucket
 Supabase Storage (chacun avec les onglets "DATA 1"/"DATA 2"/"DT" -- OU
@@ -12,9 +12,9 @@ Lancer avec :  streamlit run app.py
 IMPORTANT — Persistance des fichiers :
 Sur Streamlit Community Cloud, le disque local est éphémère (il est effacé à
 chaque mise en veille / redéploiement). Les fichiers uploadés sont donc
-stockés dans un bucket Supabase Storage plutôt que sur le disque, ce qui les
-rend permanents. Voir les instructions de configuration fournies séparément
-(secrets.toml + requirements.txt).
+maintenant stockés dans un bucket Supabase Storage plutôt que sur le disque,
+ce qui les rend permanents. Voir les instructions de configuration fournies
+séparément (secrets.toml + requirements.txt).
 """
 
 import io
@@ -33,127 +33,26 @@ from supabase import create_client  # type: ignore
 # ----------------------------------------------------------------------------
 st.set_page_config(page_title="Dashboard OEE - Aptiv", layout="wide", page_icon="📊")
 
-# ---- Palette de couleurs -----------------------------------------------------
 APTIV_BLUE = "#0033A0"
-APTIV_BLUE_DARK = "#001F66"
 APTIV_LIGHT = "#4A90D9"
 GREEN = "#2E7D32"
 ORANGE = "#F5A623"
 RED = "#D32F2F"
-INK = "#1A2340"
-MUTED = "#5A6376"
-CARD_BORDER = "#E4E8F0"
-TRACK = "#EEF1F7"
 
-# ----------------------------------------------------------------------------
-# Style global (police, en-tête, cartes, titres de section)
-# ----------------------------------------------------------------------------
 st.markdown(
-    f"""
+    """
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-
-    html, body, [class*="css"] {{
-        font-family: 'Inter', -apple-system, sans-serif;
-    }}
-
-    .block-container {{
-        padding-top: 1.1rem;
-        padding-bottom: 2.5rem;
-        max-width: 1550px;
-    }}
-
-    /* Bandeau d'en-tête */
-    .app-header {{
-        background: linear-gradient(135deg, {APTIV_BLUE} 0%, {APTIV_BLUE_DARK} 100%);
-        border-radius: 16px;
-        padding: 22px 30px;
-        margin-bottom: 20px;
-        box-shadow: 0 8px 20px rgba(0, 51, 160, 0.22);
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        flex-wrap: wrap;
-        gap: 8px;
-    }}
-    .app-header h1 {{
-        color: #FFFFFF;
-        font-size: 25px;
-        font-weight: 800;
-        margin: 0;
-        letter-spacing: 0.2px;
-    }}
-    .app-header p {{
-        color: #D7E3F7;
-        margin: 4px 0 0 0;
-        font-size: 13px;
-    }}
-    .app-header .badge {{
-        background: rgba(255,255,255,0.14);
-        color: #FFFFFF;
-        border: 1px solid rgba(255,255,255,0.35);
-        border-radius: 999px;
-        padding: 6px 14px;
-        font-size: 12.5px;
-        font-weight: 600;
-        white-space: nowrap;
-    }}
-
-    /* Cartes (conteneurs Streamlit avec bordure) */
-    div[data-testid="stVerticalBlockBorderWrapper"] {{
-        border-radius: 14px !important;
-        box-shadow: 0 2px 10px rgba(20, 30, 60, 0.06);
-        transition: box-shadow 0.15s ease;
-        background-color: #FFFFFF;
-    }}
-    div[data-testid="stVerticalBlockBorderWrapper"]:hover {{
-        box-shadow: 0 6px 18px rgba(20, 30, 60, 0.12);
-    }}
-
-    /* Titres de section avec liseré coloré */
-    .section-title {{
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        font-size: 17px;
-        font-weight: 700;
-        color: {INK};
-        border-left: 4px solid {APTIV_BLUE};
-        padding-left: 10px;
-        margin: 4px 0 14px 0;
-    }}
-
-    div[data-testid="stMetric"] {{
-        background-color: #FFFFFF;
-        border: 1px solid {CARD_BORDER};
-        border-radius: 12px;
+    .block-container {padding-top: 1.5rem;}
+    div[data-testid="stMetric"] {
+        background-color: #F5F7FA;
+        border: 1px solid #E0E4EA;
+        border-radius: 10px;
         padding: 12px 16px;
-        box-shadow: 0 2px 8px rgba(20, 30, 60, 0.05);
-    }}
-
-    section[data-testid="stSidebar"] {{
-        background-color: #F7F9FC;
-        border-right: 1px solid {CARD_BORDER};
-    }}
-
-    .stButton>button {{
-        border-radius: 8px;
-        font-weight: 600;
-    }}
-
-    hr {{ margin: 1.5rem 0; border-color: {CARD_BORDER}; }}
-
-    /* Mode Grand Écran : on agrandit un peu le texte général */
-    .ge-active .section-title {{ font-size: 20px; }}
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
-
-
-def section_title(icon: str, text: str):
-    """Affiche un titre de section stylé (remplace st.subheader)."""
-    st.markdown(f'<div class="section-title">{icon} {text}</div>', unsafe_allow_html=True)
 
 
 # ----------------------------------------------------------------------------
@@ -536,57 +435,53 @@ def fmt_pct(x):
     return f"{x * 100:.1f} %" if x is not None else "N/A"
 
 
-# ----------------------------------------------------------------------------
-# Jauges circulaires (style "carte KPI" Power BI)
-# ----------------------------------------------------------------------------
-def circle_gauge(value_pct, title, color, big: bool = False):
-    """Jauge circulaire pleine (donut complet) pour un % (0-100).
-    `value_pct` peut être None (affiché comme 0 avec la mention N/A cachée dans le %).
-    `big` agrandit la jauge pour le Mode Grand Écran.
-    """
-    v = 0.0 if value_pct is None else max(0.0, min(100.0, float(value_pct)))
-    remainder = 100.0 - v
+def gauge(value, title, color):
+    """Jauge circulaire style 'compteur' pour un KPI en %."""
+    v = value * 100 if value is not None else 0
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=v,
+        number={"suffix": " %", "font": {"size": 22}},
+        title={"text": title, "font": {"size": 13}},
+        gauge={
+            "axis": {"range": [0, 100], "tickwidth": 1},
+            "bar": {"color": color, "thickness": 0.3},
+            "bgcolor": "white",
+            "steps": [
+                {"range": [0, 60], "color": "#FBE4E4"},
+                {"range": [60, 85], "color": "#FEF3D9"},
+                {"range": [85, 100], "color": "#E4F3E5"},
+            ],
+        },
+    ))
+    fig.update_layout(height=160, margin=dict(t=30, b=5, l=15, r=15))
+    return fig
 
+
+def half_donut_gauge(value_pct, title, color):
+    """Demi-cercle (jauge en donut coupé en deux) pour représenter un % (0-100)."""
+    v = 0 if value_pct is None else max(0.0, min(100.0, value_pct))
+    remainder = 100 - v
     fig = go.Figure(go.Pie(
-        values=[v, remainder],
-        hole=0.72,
-        rotation=0,
+        values=[v, remainder, 100],
+        rotation=270,
+        hole=0.65,
         direction="clockwise",
         sort=False,
-        marker=dict(colors=[color, TRACK], line=dict(color="#FFFFFF", width=1)),
+        marker=dict(colors=[color, "#E7EAF0", "rgba(0,0,0,0)"]),
         textinfo="none",
         hoverinfo="skip",
         showlegend=False,
     ))
-
-    height = 250 if big else 178
-    num_size = 34 if big else 21
-    title_size = 16 if big else 12
-
     fig.update_layout(
-        height=height,
-        margin=dict(t=8, b=8, l=8, r=8),
-        paper_bgcolor="rgba(0,0,0,0)",
-        annotations=[
-            dict(
-                text=f"<b>{v:.1f}%</b>", x=0.5, y=0.53, showarrow=False,
-                font=dict(size=num_size, color=INK, family="Inter, sans-serif"),
-            ),
-            dict(
-                text=title, x=0.5, y=0.53, yshift=-(num_size * 1.35), showarrow=False,
-                font=dict(size=title_size, color=MUTED, family="Inter, sans-serif"),
-            ),
-        ],
+        height=155,
+        margin=dict(t=28, b=0, l=6, r=6),
+        title=dict(text=title, x=0.5, y=0.98, font=dict(size=11)),
+        annotations=[dict(
+            text=f"<b>{v:.1f}%</b>", x=0.5, y=0.42, showarrow=False, font=dict(size=15),
+        )],
     )
     return fig
-
-
-def kpi_card(col, title, value_frac, color, big: bool = False):
-    """Affiche une jauge circulaire KPI dans une carte avec bordure, dans la colonne donnée."""
-    pct = value_frac * 100 if value_frac is not None else None
-    with col:
-        with st.container(border=True):
-            st.plotly_chart(circle_gauge(pct, title, color, big=big), use_container_width=True)
 
 
 def _get_admins() -> dict:
@@ -600,19 +495,7 @@ def _get_admins() -> dict:
 # ----------------------------------------------------------------------------
 # Interface
 # ----------------------------------------------------------------------------
-_now_str = pd.Timestamp.now().strftime("%d/%m/%Y %H:%M")
-st.markdown(
-    f"""
-    <div class="app-header">
-        <div>
-            <h1>📊 Dashboard OEE — Département Production</h1>
-            <p>Availability · Performance · Quality · OEE — Aptiv</p>
-        </div>
-        <div class="badge">🕒 Dernière actualisation : {_now_str}</div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+st.title("📊 Dashboard OEE — Département Production")
 
 if "is_admin" not in st.session_state:
     st.session_state.is_admin = False
@@ -695,18 +578,8 @@ if raw_log.empty and summary.empty:
     st.warning("Aucune donnée exploitable trouvée pour le moment.")
     st.stop()
 
-# ---- Filtres + Mode Grand Écran ----
+# ---- Filtres ----
 with st.sidebar:
-    st.divider()
-    st.header("🖥️ Affichage")
-    grand_ecran = st.checkbox(
-        "Mode Grand Écran (TV)",
-        value=False,
-        help="Agrandit les jauges circulaires et les graphiques pour un affichage type "
-             "écran de production / TV d'atelier.",
-    )
-
-    st.divider()
     st.header("🔎 Filtres")
     all_dates = sorted(set(raw_log.get("Date", pd.Series(dtype=object))) |
                        set(summary.get("Date", pd.Series(dtype=object))))
@@ -738,25 +611,21 @@ if raw_log_f.empty and summary_f.empty:
 
 kpis = compute_kpis(raw_log_f, summary_f)
 
-if grand_ecran:
-    st.markdown('<div class="ge-active"></div>', unsafe_allow_html=True)
-
 # ----------------------------------------------------------------------------
-# Rangée 1 : les 4 KPI principaux en jauges circulaires (façon carte Power BI)
+# Rangée 1 : jauges des 4 KPI
 # ----------------------------------------------------------------------------
-section_title("🎯", "Indicateurs clés")
 g1, g2, g3, g4 = st.columns(4)
-kpi_card(g1, "Availability", kpis["Availability"], APTIV_BLUE, big=grand_ecran)
-kpi_card(g2, "Performance", kpis["Performance"], APTIV_LIGHT, big=grand_ecran)
-kpi_card(g3, "Quality", kpis["Quality"], GREEN, big=grand_ecran)
-kpi_card(g4, "OEE", kpis["OEE"], ORANGE, big=grand_ecran)
+g1.plotly_chart(gauge(kpis["Availability"], "Availability", APTIV_BLUE), use_container_width=True)
+g2.plotly_chart(gauge(kpis["Performance"], "Performance", APTIV_LIGHT), use_container_width=True)
+g3.plotly_chart(gauge(kpis["Quality"], "Quality", GREEN), use_container_width=True)
+g4.plotly_chart(gauge(kpis["OEE"], "OEE", ORANGE), use_container_width=True)
 
 st.divider()
 
 # ----------------------------------------------------------------------------
-# Rangée 2 : Availability par downtime code (jauges circulaires)
+# Rangée 2 : Availability par downtime code (demi-cercles)
 # ----------------------------------------------------------------------------
-section_title("🟢", "Availability par catégorie de downtime code")
+st.subheader("Availability par catégorie de downtime code")
 
 denom_dispo = kpis["Temps de Fonctionnement (h)"] + kpis["Temps Arret Confesse (h)"]
 
@@ -782,17 +651,15 @@ if not raw_log_f.empty and denom_dispo > 0 and not dt_legend.empty and "CodeDT_n
     df_cat_avail = df_cat_avail.sort_values("Pct", ascending=False)
 
     if not df_cat_avail.empty and df_cat_avail["Pct"].sum() > 0:
-        n_par_ligne = 4 if grand_ecran else 6
+        n_par_ligne = 6
         rows_codes = [df_cat_avail.iloc[i:i + n_par_ligne] for i in range(0, len(df_cat_avail), n_par_ligne)]
         for chunk in rows_codes:
             cols = st.columns(len(chunk))
             for col, (_, row) in zip(cols, chunk.iterrows()):
-                with col:
-                    with st.container(border=True):
-                        st.plotly_chart(
-                            circle_gauge(row["Pct"], row["Categorie"], row["Color"], big=grand_ecran),
-                            use_container_width=True,
-                        )
+                col.plotly_chart(
+                    half_donut_gauge(row["Pct"], row["Categorie"], row["Color"]),
+                    use_container_width=True,
+                )
     else:
         st.info("Aucun arrêt enregistré pour la sélection actuelle.")
 else:
@@ -803,7 +670,7 @@ st.divider()
 # ----------------------------------------------------------------------------
 # Rangée 2bis : Machines dont le cycle time dépasse l'intervalle cible
 # ----------------------------------------------------------------------------
-section_title("⏱️", "Cycle time hors tolérance")
+st.subheader("⏱️ Cycle time hors tolérance")
 if not summary_f.empty and "Average cycle (s)" in summary_f.columns:
     cyc = summary_f.dropna(subset=["Average cycle (s)", "Target cycle (s)"]).copy()
     cyc["Tolerance cycle (s)"] = cyc["Tolerance cycle (s)"].fillna(0)
@@ -826,35 +693,32 @@ if not summary_f.empty and "Average cycle (s)" in summary_f.columns:
             ),
             texttemplate="+%{x:.2f} s", textposition="outside",
         )
-        base_h = 30 if grand_ecran else 26
-        fig.update_layout(height=max(240, base_h * len(cyc_over)), margin=dict(t=10),
-                           plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        fig.update_layout(height=max(220, 26 * len(cyc_over)), margin=dict(t=10),
                            xaxis_title="Dépassement au-delà de la tolérance (s)", yaxis_title="")
 
-        with st.container(border=True):
-            cyc_chart_col, cyc_detail_col = st.columns([2, 1])
-            with cyc_chart_col:
-                event_cyc = st.plotly_chart(
-                    fig, use_container_width=True,
-                    on_select="rerun", selection_mode="points", key="cycle_time_chart",
-                )
-            with cyc_detail_col:
-                points_cyc = (event_cyc or {}).get("selection", {}).get("points", [])
-                if points_cyc:
-                    p = points_cyc[0]
-                    machine_sel_cyc = p.get("y")
-                    row_sel = cyc_over[cyc_over["Machine"] == machine_sel_cyc]
-                    if not row_sel.empty:
-                        row_sel = row_sel.iloc[0]
-                        st.markdown(f"**Machine `{machine_sel_cyc}`**")
-                        st.write(f"Article : {row_sel.get('Article name', 'N/A')}")
-                        st.write(f"Cible : {row_sel['Target cycle (s)']:.2f} s ± {row_sel['Tolerance cycle (s)']:.2f} s")
-                        st.write(f"Moyenne mesurée : {row_sel['Average cycle (s)']:.2f} s")
-                        st.write(f"Dépassement : +{row_sel['Dépassement (s)']:.2f} s")
-                    else:
-                        st.caption("Aucun détail trouvé pour cette sélection.")
+        cyc_chart_col, cyc_detail_col = st.columns([2, 1])
+        with cyc_chart_col:
+            event_cyc = st.plotly_chart(
+                fig, use_container_width=True,
+                on_select="rerun", selection_mode="points", key="cycle_time_chart",
+            )
+        with cyc_detail_col:
+            points_cyc = (event_cyc or {}).get("selection", {}).get("points", [])
+            if points_cyc:
+                p = points_cyc[0]
+                machine_sel_cyc = p.get("y")
+                row_sel = cyc_over[cyc_over["Machine"] == machine_sel_cyc]
+                if not row_sel.empty:
+                    row_sel = row_sel.iloc[0]
+                    st.markdown(f"**Machine `{machine_sel_cyc}`**")
+                    st.write(f"Article : {row_sel.get('Article name', 'N/A')}")
+                    st.write(f"Cible : {row_sel['Target cycle (s)']:.2f} s ± {row_sel['Tolerance cycle (s)']:.2f} s")
+                    st.write(f"Moyenne mesurée : {row_sel['Average cycle (s)']:.2f} s")
+                    st.write(f"Dépassement : +{row_sel['Dépassement (s)']:.2f} s")
                 else:
-                    st.caption("👆 Clique sur une barre pour voir le détail ici.")
+                    st.caption("Aucun détail trouvé pour cette sélection.")
+            else:
+                st.caption("👆 Clique sur une barre pour voir le détail ici.")
     else:
         st.info("Aucune machine ne dépasse son intervalle de cycle time cible pour la sélection actuelle.")
 else:
@@ -865,9 +729,9 @@ st.divider()
 # ----------------------------------------------------------------------------
 # Rangée 3 : répartition des arrêts (donut par cause) + top causes (barres)
 # ----------------------------------------------------------------------------
-section_title("📉", "Analyse des temps d'arrêt")
+st.subheader("📉 Analyse des temps d'arrêt")
 
-# --- Donut : répartition par CODE d'arrêt (catégorie : Prod/Mnt/MG/TR/MPC/Qlt/ME/HR...) ---
+# --- Nouveau donut : répartition par CODE d'arrêt (catégorie : Prod/Mnt/MG/TR/MPC/Qlt/ME/HR...) ---
 st.markdown("**Répartition par code d'arrêt (catégorie)**")
 if not raw_log_f.empty and not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
     raw_with_cat = raw_log_f.merge(
@@ -890,16 +754,12 @@ if not raw_log_f.empty and not dt_legend.empty and "CodeDT_num" in dt_legend.col
         )
         colors = [cat_color_map.get(c, "#9E9E9E") for c in df_cat["Categorie"]]
         fig_cat = go.Figure(go.Pie(
-            labels=df_cat["Categorie"], values=df_cat["confessed [h]"], hole=0.5,
-            marker=dict(colors=colors, line=dict(color="#FFFFFF", width=1)),
+            labels=df_cat["Categorie"], values=df_cat["confessed [h]"], hole=0.45,
+            marker=dict(colors=colors),
             textinfo="percent", hovertemplate="<b>%{label}</b><br>%{value:.2f} h<extra></extra>",
         ))
-        fig_cat.update_layout(
-            height=340 if grand_ecran else 270, margin=dict(t=10, b=10),
-            paper_bgcolor="rgba(0,0,0,0)", legend=dict(font=dict(size=10 if grand_ecran else 9)),
-        )
-        with st.container(border=True):
-            st.plotly_chart(fig_cat, use_container_width=True)
+        fig_cat.update_layout(height=260, margin=dict(t=10, b=10), legend=dict(font=dict(size=9)))
+        st.plotly_chart(fig_cat, use_container_width=True)
     else:
         st.info("Aucun arrêt enregistré pour la sélection actuelle.")
 else:
@@ -941,14 +801,13 @@ with col_pie:
                 df_dt["Label"] = df_dt["Downtime name"]
                 colors = None
             fig = go.Figure(go.Pie(
-                labels=df_dt["Label"], values=df_dt["confessed [h]"], hole=0.5,
-                marker=dict(colors=colors, line=dict(color="#FFFFFF", width=1)) if colors else dict(line=dict(color="#FFFFFF", width=1)),
+                labels=df_dt["Label"], values=df_dt["confessed [h]"], hole=0.45,
+                marker=dict(colors=colors) if colors else {},
                 textinfo="percent", hovertemplate="<b>%{label}</b><br>%{value:.2f} h<extra></extra>",
             ))
-            fig.update_layout(height=300 if grand_ecran else 280, margin=dict(t=10, b=10),
-                               paper_bgcolor="rgba(0,0,0,0)", legend=dict(font=dict(size=9)))
-            with st.container(border=True):
-                st.plotly_chart(fig, use_container_width=True)
+            fig.update_layout(height=280, margin=dict(t=10, b=10),
+                               legend=dict(font=dict(size=9)))
+            st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("Aucun arrêt enregistré pour la sélection actuelle.")
     else:
@@ -986,18 +845,16 @@ with col_bar:
                 color_discrete_map=colors_map if colors_map else None,
                 color_discrete_sequence=[RED] if not colors_map else None,
             )
-            fig.update_layout(height=300 if grand_ecran else 280, margin=dict(t=10, b=10), showlegend=False,
-                              plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            fig.update_layout(height=280, margin=dict(t=10, b=10), showlegend=False,
                               xaxis_title="Heures d'arrêt", yaxis_title="")
             fig.update_traces(texttemplate="%{x:.2f} h", textposition="outside")
-            with st.container(border=True):
-                st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("Aucun arrêt enregistré pour la sélection actuelle.")
     else:
         st.info("Pas de données disponibles.")
 
-section_title("🏭", "Code d'arrêt (catégorie) par machine")
+st.subheader("Code d'arrêt (catégorie) par machine")
 if not raw_log_f.empty and not dt_legend.empty and "CodeDT_num" in dt_legend.columns:
     raw_with_cat_m = raw_log_f.merge(
         dt_legend[["CodeDT_num", "Categorie", "ColorHEX"]],
@@ -1026,14 +883,12 @@ if not raw_log_f.empty and not dt_legend.empty and "CodeDT_num" in dt_legend.col
             color_discrete_map=cat_color_map_m,
             custom_data=["Categorie"],
         )
-        fig_m.update_layout(height=300 if grand_ecran else 260, margin=dict(t=10), barmode="stack",
-                             plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        fig_m.update_layout(height=260, margin=dict(t=10), barmode="stack",
                              xaxis_title="", yaxis_title="Heures d'arrêt")
-        with st.container(border=True):
-            event_m = st.plotly_chart(
-                fig_m, use_container_width=True,
-                on_select="rerun", selection_mode="points", key="machine_cat_chart",
-            )
+        event_m = st.plotly_chart(
+            fig_m, use_container_width=True,
+            on_select="rerun", selection_mode="points", key="machine_cat_chart",
+        )
 
         points = (event_m or {}).get("selection", {}).get("points", [])
         if points:
